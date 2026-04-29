@@ -2,6 +2,7 @@ pub const EXTENSION_DEGREE: usize = 4;
 
 pub mod blake;
 pub mod circuit;
+pub mod poseidon2;
 pub mod context;
 pub mod extract_bits;
 pub mod ivalue;

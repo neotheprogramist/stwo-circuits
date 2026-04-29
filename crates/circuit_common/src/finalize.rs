@@ -1,5 +1,4 @@
 use crate::N_LANES;
-use circuits::blake::{HashValue, blake};
 use circuits::context::{Context, Var};
 use circuits::eval;
 use circuits::ivalue::{IValue, qm31_from_u32s};
@@ -35,21 +34,12 @@ fn pad_eq(context: &mut Context<impl IValue>) {
     }
 }
 
-fn blake_padding_count(n_blake_compress_rows: usize) -> usize {
-    let target_blake_compress_rows =
-        std::cmp::max(n_blake_compress_rows.next_multiple_of(N_LANES), N_LANES);
-
-    target_blake_compress_rows - n_blake_compress_rows
-}
-
-fn pad_blake(context: &mut Context<impl IValue>) {
-    let n_blake_compress_rows: usize =
-        context.circuit.blake.iter().map(|gate| gate.input.len()).sum();
-    let n_single_block_padding_gates = blake_padding_count(n_blake_compress_rows);
-
+fn pad_poseidon(context: &mut Context<impl IValue>) {
+    let n = context.circuit.poseidon.len();
+    let padded = std::cmp::max(n.next_power_of_two().max(1), N_LANES);
     let zero = context.zero();
-    for _ in 0..n_single_block_padding_gates {
-        circuits::blake::blake(context, &[zero], 1);
+    for _ in n..padded {
+        circuits::poseidon2::poseidon_gate(context, zero, zero);
     }
 }
 
@@ -62,10 +52,19 @@ fn pad_m31_to_u32(context: &mut Context<impl IValue>) {
     }
 }
 
-fn hash_constants(context: &mut Context<impl IValue>) -> HashValue<Var> {
+fn hash_constants(context: &mut Context<impl IValue>) -> Var {
     let constants: Vec<_> = context.constants().values().copied().collect();
-    let n_bytes = constants.len() * 16;
-    blake(context, &constants, n_bytes)
+    let zero = context.zero();
+    if constants.is_empty() {
+        return circuits::poseidon2::poseidon_gate(context, zero, zero);
+    }
+    let first = constants[0];
+    let second = if constants.len() > 1 { constants[1] } else { zero };
+    let mut state = circuits::poseidon2::poseidon_gate(context, first, second);
+    for &c in constants.iter().skip(2) {
+        state = circuits::poseidon2::poseidon_gate(context, state, c);
+    }
+    state
 }
 
 /// Finalizes the context by appending gates to the context for:
@@ -75,16 +74,13 @@ fn hash_constants(context: &mut Context<impl IValue>) -> HashValue<Var> {
 // TODO(Gali): Have it under a trait.
 // TODO(Ilya): Make it pub(crate).
 pub fn finalize_context(context: &mut Context<impl IValue>) {
-    let HashValue(hash0, hash1) = hash_constants(context);
-    // Add the hash of the constants to the outputs.
-    // TODO(Leo): consider storing these values at a fixed address.
-    output(context, hash0);
-    output(context, hash1);
+    let hash = hash_constants(context);
+    output(context, hash);
 
     // Padding the components to a power of two.
     pad_eq(context);
     pad_qm31_ops(context);
-    pad_blake(context);
+    pad_poseidon(context);
     pad_m31_to_u32(context);
 }
 

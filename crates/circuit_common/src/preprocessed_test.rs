@@ -1,5 +1,5 @@
 use crate::preprocessed::PreprocessedCircuit;
-use circuits::circuit::{Add, Blake, Circuit, Eq, M31ToU32, Mul, PointwiseMul, Sub};
+use circuits::circuit::{Add, Circuit, Eq, M31ToU32, Mul, PointwiseMul, Poseidon, Sub};
 use expect_test::expect;
 use itertools::Itertools;
 use stwo::prover::backend::Column;
@@ -19,27 +19,21 @@ fn test_preprocess_circuit() {
     circuit.eq.push(Eq { in0: 0, in1: 1 });
     circuit.eq.push(Eq { in0: 0, in1: 2 });
     for i in 0..16 {
-        let in0 = (i * 4) % 24;
-        let in1 = (i * 4 + 1) % 24;
-        let in2 = (i * 4 + 2) % 24;
-        let in3 = (i * 4 + 3) % 24;
-        circuit.blake.push(Blake {
-            input: vec![[in0, in1, in2, in3]],
-            n_bytes: 64,
-            out0: 24 + 2 * i,
-            out1: 24 + 2 * i + 1,
+        circuit.poseidon.push(Poseidon {
+            in0: (i * 2) % 24,
+            in1: (i * 2 + 1) % 24,
+            out: 24 + i,
         });
     }
     for i in 0..16 {
-        circuit.m31_to_u32.push(M31ToU32 { input: 0, out: 56 + i });
+        circuit.m31_to_u32.push(M31ToU32 { input: 0, out: 40 + i });
     }
-    circuit.n_vars = 72;
+    circuit.n_vars = 56;
 
     let preprocessed_trace = PreprocessedCircuit::from_finalized_circuit(&circuit)
         .preprocessed_trace
         .get_trace::<SimdBackend>();
 
-    assert_eq!(preprocessed_trace.len(), 62);
     let lengths = preprocessed_trace.iter().map(|column| column.values.len()).collect_vec();
     expect![[r#"
         [
@@ -60,51 +54,7 @@ fn test_preprocess_circuit() {
             16,
             16,
             16,
-            16,
-            16,
-            16,
-            16,
-            16,
-            16,
-            16,
-            16,
-            16,
-            16,
-            16,
-            16,
-            16,
-            16,
-            16,
-            16,
-            16,
-            16,
-            16,
-            16,
-            16,
-            16,
-            16,
-            16,
-            16,
-            16,
-            16,
-            16,
-            256,
-            256,
-            256,
-            16384,
-            16384,
-            16384,
-            32768,
             65536,
-            65536,
-            65536,
-            65536,
-            262144,
-            262144,
-            262144,
-            1048576,
-            1048576,
-            1048576,
         ]
     "#]]
     .assert_debug_eq(&lengths);
