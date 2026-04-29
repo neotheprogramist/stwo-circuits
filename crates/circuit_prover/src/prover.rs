@@ -1,4 +1,4 @@
-use crate::circuit_air::circuit_components::CircuitComponents;
+use crate::circuit_air::components::{eq, m_31_to_u_32, poseidon_gate, qm31_ops, range_check_16};
 use crate::witness::trace::TraceGenerator;
 use crate::witness::trace::write_interaction_trace;
 use crate::witness::trace::write_trace;
@@ -8,14 +8,15 @@ use circuit_common::preprocessed::PreprocessedCircuit;
 use circuit_verifier::circuit_claim::{
     CircuitClaim, CircuitInteractionClaim, CircuitInteractionElements, lookup_sum,
 };
+use circuit_verifier::circuit_components::ComponentList;
 use circuit_verifier::statement::INTERACTION_POW_BITS;
 use circuit_verifier::verify::CircuitPublicData;
+use circuits::context::Context;
 use circuits_stark_verifier::proof::Proof;
 use circuits_stark_verifier::proof::{Claim, ProofConfig};
 use circuits_stark_verifier::proof_from_stark_proof::{
     pack_component_log_sizes, proof_from_stark_proof,
 };
-use itertools::chain;
 use num_traits::Zero;
 use stwo::core::air::Component;
 use stwo::core::channel::{Channel, MerkleChannel};
@@ -36,6 +37,7 @@ pub use stwo::prover::mempool::BaseColumnPool;
 use stwo::prover::poly::circle::PolyOps;
 use stwo::prover::poly::twiddles::TwiddleTree;
 use stwo::prover::{ProvingError, prove_ex};
+use stwo_constraint_framework::TraceLocationAllocator;
 
 const COMPOSITION_POLYNOMIAL_LOG_DEGREE_BOUND: u32 = 1;
 
@@ -53,28 +55,14 @@ pub struct CircuitProof<H: MerkleHasherLifted> {
 #[path = "prover_test.rs"]
 pub mod test;
 
-pub fn to_component_provers(
-    components: &CircuitComponents,
-) -> Vec<&dyn ComponentProver<SimdBackend>> {
-    chain!([
-        &components.eq as &dyn ComponentProver<SimdBackend>,
-        &components.qm31_ops as &dyn ComponentProver<SimdBackend>,
-        &components.blake_gate as &dyn ComponentProver<SimdBackend>,
-        &components.blake_round as &dyn ComponentProver<SimdBackend>,
-        &components.blake_round_sigma as &dyn ComponentProver<SimdBackend>,
-        &components.blake_g as &dyn ComponentProver<SimdBackend>,
-        &components.blake_output as &dyn ComponentProver<SimdBackend>,
-        &components.triple_xor_32 as &dyn ComponentProver<SimdBackend>,
-        &components.m_31_to_u_32 as &dyn ComponentProver<SimdBackend>,
-        &components.verify_bitwise_xor_8 as &dyn ComponentProver<SimdBackend>,
-        &components.verify_bitwise_xor_12 as &dyn ComponentProver<SimdBackend>,
-        &components.verify_bitwise_xor_4 as &dyn ComponentProver<SimdBackend>,
-        &components.verify_bitwise_xor_7 as &dyn ComponentProver<SimdBackend>,
-        &components.verify_bitwise_xor_9 as &dyn ComponentProver<SimdBackend>,
-        &components.range_check_15 as &dyn ComponentProver<SimdBackend>,
-        &components.range_check_16 as &dyn ComponentProver<SimdBackend>,
-    ])
-    .collect()
+pub fn prove_circuit(context: &mut Context<QM31>) -> CircuitProof<Blake2sM31MerkleHasher> {
+    let preprocessed_circuit = PreprocessedCircuit::preprocess_circuit(context);
+    prove_circuit_assignment(
+        context.values(),
+        &preprocessed_circuit,
+        &BaseColumnPool::<SimdBackend>::new(),
+        PcsConfig::default(),
+    )
 }
 
 pub fn prove_circuit_assignment(
@@ -91,6 +79,7 @@ pub fn prove_circuit_assignment(
     )
 }
 
+
 pub fn prove_circuit_assignment_with_channel<MC>(
     values: &[QM31],
     preprocessed_circuit: &PreprocessedCircuit,
@@ -105,9 +94,6 @@ where
     let lifting_log_size = trace_log_size + pcs_config.fri_config.log_blowup_factor;
     let pcs_config = PcsConfig { lifting_log_size: Some(lifting_log_size), ..pcs_config };
 
-    // Precompute twiddles.
-    // Account for blowup factor and for composition polynomial calculation (taking the max since
-    // the composition polynomial is split prior to LDE).
     let twiddles = SimdBackend::precompute_twiddles(
         CanonicCoset::new(
             trace_log_size
@@ -156,17 +142,15 @@ where
     SimdBackend: stwo::prover::backend::BackendForChannel<MC>,
 {
     let PreprocessedCircuit { preprocessed_trace, params } = preprocessed_circuit;
-    let CircuitParams { first_permutation_row, n_blake_gates, output_addresses, .. } = params;
+    let CircuitParams { first_permutation_row, output_addresses, .. } = params;
     let trace_generator = TraceGenerator {
         qm31_ops_trace_generator: Qm31OpsTraceGenerator {
             first_permutation_row: *first_permutation_row,
         },
     };
 
-    // Setup protocol.
     let channel = &mut MC::C::default();
 
-    // Mix channel salt. Note that we first reduce it modulo `M31::P`, then cast it as QM31.
     let channel_salt = 0_u32;
     channel.mix_felts(&[channel_salt.into()]);
     pcs_config.mix_into(channel);
@@ -178,7 +162,6 @@ where
 
     commitment_scheme.set_store_polynomials_coefficients();
 
-    // Preprocessed trace.
     commitment_scheme.commit_tree(preprocessed_tree, channel);
 
     // Base trace.
@@ -209,37 +192,85 @@ where
         twiddles,
     );
 
-    // Validate lookup argument.
     assert_eq!(
-        lookup_sum(
-            &claim,
-            &interaction_claim,
-            &interaction_elements,
-            output_addresses,
-            *n_blake_gates
-        ),
+        lookup_sum(&claim, &interaction_claim, &interaction_elements, output_addresses),
         QM31::zero()
     );
 
     interaction_claim.mix_into(channel);
     tree_builder.commit(channel);
-    // Component provers.
-    let circuit_components = CircuitComponents::new(
-        &claim,
-        &interaction_elements,
-        &interaction_claim,
-        &preprocessed_trace.ids(),
-    );
-    let components = to_component_provers(&circuit_components);
 
-    // Prove stark.
+    // Construct components.
+    let preprocessed_column_ids = preprocessed_trace.ids();
+    let tree_span_provider =
+        &mut TraceLocationAllocator::new_with_preprocessed_columns(&preprocessed_column_ids);
+
+    let eq_component = eq::Component::new(
+        tree_span_provider,
+        eq::Eval {
+            log_size: claim.log_sizes[ComponentList::Eq as usize],
+            common_lookup_elements: interaction_elements.common_lookup_elements.clone(),
+        },
+        interaction_claim.claimed_sums[ComponentList::Eq as usize],
+    );
+    let qm31_ops_component = qm31_ops::Component::new(
+        tree_span_provider,
+        qm31_ops::Eval {
+            log_size: claim.log_sizes[ComponentList::Qm31Ops as usize],
+            common_lookup_elements: interaction_elements.common_lookup_elements.clone(),
+        },
+        interaction_claim.claimed_sums[ComponentList::Qm31Ops as usize],
+    );
+    let poseidon_gate_component = poseidon_gate::Component::new(
+        tree_span_provider,
+        poseidon_gate::Eval {
+            claim: poseidon_gate::Claim {
+                log_size: claim.log_sizes[ComponentList::PoseidonGate as usize],
+            },
+            common_lookup_elements: interaction_elements.common_lookup_elements.clone(),
+        },
+        interaction_claim.claimed_sums[ComponentList::PoseidonGate as usize],
+    );
+    let m_31_to_u_32_component = m_31_to_u_32::Component::new(
+        tree_span_provider,
+        m_31_to_u_32::Eval {
+            claim: m_31_to_u_32::Claim {
+                log_size: claim.log_sizes[ComponentList::M31ToU32 as usize],
+            },
+            common_lookup_elements: interaction_elements.common_lookup_elements.clone(),
+        },
+        interaction_claim.claimed_sums[ComponentList::M31ToU32 as usize],
+    );
+    let range_check_16_component = range_check_16::Component::new(
+        tree_span_provider,
+        range_check_16::Eval {
+            claim: range_check_16::Claim {},
+            common_lookup_elements: interaction_elements.common_lookup_elements.clone(),
+        },
+        interaction_claim.claimed_sums[ComponentList::RangeCheck16 as usize],
+    );
+
+    let components: Vec<&dyn ComponentProver<SimdBackend>> = vec![
+        &eq_component,
+        &qm31_ops_component,
+        &poseidon_gate_component,
+        &m_31_to_u_32_component,
+        &range_check_16_component,
+    ];
+
     let proof = prove_ex::<SimdBackend, _>(&components, channel, commitment_scheme, true);
     CircuitProof {
         pcs_config,
         claim,
         interaction_pow_nonce,
         interaction_claim,
-        components: circuit_components.components(),
+        components: vec![
+            Box::new(eq_component) as Box<dyn Component>,
+            Box::new(qm31_ops_component) as Box<dyn Component>,
+            Box::new(poseidon_gate_component) as Box<dyn Component>,
+            Box::new(m_31_to_u_32_component) as Box<dyn Component>,
+            Box::new(range_check_16_component) as Box<dyn Component>,
+        ],
         stark_proof: proof,
         channel_salt,
     }
@@ -263,7 +294,7 @@ pub fn prepare_circuit_proof_for_circuit_verifier(
 
     let public_data = CircuitPublicData { output_values: claim.output_values.clone() };
 
-    let claim = Claim {
+    let packed_claim = Claim {
         packed_component_log_sizes: pack_component_log_sizes(&claim.log_sizes),
         claimed_sums: interaction_claim.claimed_sums.to_vec(),
     };
@@ -271,7 +302,7 @@ pub fn prepare_circuit_proof_for_circuit_verifier(
     let proof = proof_from_stark_proof(
         &stark_proof,
         proof_config,
-        claim,
+        packed_claim,
         interaction_pow_nonce,
         channel_salt,
     );

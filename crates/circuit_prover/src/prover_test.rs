@@ -161,13 +161,13 @@ fn stwo_verify(
             &interaction_claim,
             &interaction_elements,
             &preprocessed_circuit.params.output_addresses,
-            preprocessed_circuit.params.n_blake_gates,
         ),
         QM31::zero()
     );
 }
 
 #[test]
+#[ignore = "Blake gate AIR removed on feat/poseidon-instead-blake branch"]
 fn test_prove_and_stark_verify_blake_gate_context() {
     let mut blake_gate_context = build_blake_gate_context();
     blake_gate_context.finalize_guessed_vars();
@@ -250,7 +250,6 @@ fn circuit_verify(
     let circuit_config = CircuitConfig {
         config: circuit_proof.pcs_config,
         output_addresses: preprocessed_circuit.params.output_addresses.clone(),
-        n_blake_gates: preprocessed_circuit.params.n_blake_gates,
         preprocessed_column_ids: preprocessed_circuit.preprocessed_trace.ids(),
         preprocessed_column_log_sizes: preprocessed_circuit.preprocessed_trace.log_sizes(),
         preprocessed_root: preprocessed_root.into(),

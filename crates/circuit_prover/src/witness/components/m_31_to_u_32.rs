@@ -4,7 +4,8 @@ use crate::witness::components::prelude::*;
 use crate::witness::components::range_check_16;
 use stwo::core::fields::FieldExpOps;
 use stwo::core::fields::qm31::QM31;
-use stwo_cairo_common::prover_types::simd::EqExtend;
+use stwo_cairo_common::prover_types::cpu::UInt32;
+use stwo_cairo_common::prover_types::simd::{EqExtend, PackedM31Type, PackedUInt32};
 
 pub type InputType = (M31, UInt32);
 pub type PackedInputType = (PackedM31, PackedUInt32);

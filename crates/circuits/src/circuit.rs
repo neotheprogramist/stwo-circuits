@@ -5,6 +5,7 @@ use stwo::core::fields::qm31::QM31;
 
 use crate::blake::blake_qm31;
 use crate::ivalue::IValue;
+use crate::poseidon2::poseidon2_value_qm31;
 
 #[cfg(test)]
 #[path = "circuit_test.rs"]
@@ -239,6 +240,35 @@ impl std::fmt::Debug for M31ToU32 {
     }
 }
 
+/// Represents a Poseidon2 hash gate: `[out] = poseidon2([in0], [in1])`.
+/// Both inputs are full QM31 values; all 8 M31 limbs feed the permutation state.
+#[derive(PartialEq, Eq)]
+pub struct Poseidon {
+    pub in0: usize,
+    pub in1: usize,
+    pub out: usize,
+}
+impl Gate for Poseidon {
+    fn check(&self, values: &[QM31]) -> Result<(), String> {
+        use crate::ivalue::qm31_from_u32s;
+        let [s0, s1, s2, s3] = poseidon2_value_qm31(values[self.in0], values[self.in1]);
+        check_eq(values[self.out], qm31_from_u32s(s0.0, s1.0, s2.0, s3.0))
+    }
+
+    fn uses(&self) -> Vec<usize> {
+        vec![self.in0, self.in1]
+    }
+
+    fn yields(&self) -> Vec<usize> {
+        vec![self.out]
+    }
+}
+impl std::fmt::Debug for Poseidon {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "[{}] = poseidon2([{}], [{}])", self.out, self.in0, self.in1)
+    }
+}
+
 /// Represents a permutation gate in the circuit.
 /// The gate enforces that the input values as a multi-set are equal to the output values
 /// as a multi-set.
@@ -318,6 +348,7 @@ pub struct Circuit {
     pub pointwise_mul: Vec<PointwiseMul>,
     pub eq: Vec<Eq>,
     pub blake: Vec<Blake>,
+    pub poseidon: Vec<Poseidon>,
     pub m31_to_u32: Vec<M31ToU32>,
     pub permutation: Vec<Permutation>,
     pub output: Vec<Output>,
@@ -334,6 +365,7 @@ impl Circuit {
             pointwise_mul,
             eq,
             blake,
+            poseidon,
             m31_to_u32,
             permutation,
             output,
@@ -345,6 +377,7 @@ impl Circuit {
             pointwise_mul.iter().map(|g| g as &dyn Gate),
             eq.iter().map(|g| g as &dyn Gate),
             blake.iter().map(|g| g as &dyn Gate),
+            poseidon.iter().map(|g| g as &dyn Gate),
             m31_to_u32.iter().map(|g| g as &dyn Gate),
             permutation.iter().map(|g| g as &dyn Gate),
             output.iter().map(|g| g as &dyn Gate),

@@ -1,6 +1,5 @@
-use crate::blake2s_consts::blake2s_initial_state;
 use crate::circuit_components::N_COMPONENTS;
-use crate::relations::{BLAKE_STATE_RELATION_ID, CommonLookupElements, GATE_RELATION_ID};
+use crate::relations::{CommonLookupElements, GATE_RELATION_ID};
 use circuits::ivalue::qm31_from_u32s;
 use circuits_stark_verifier::proof_from_stark_proof::{pack_component_log_sizes, pack_enable_bits};
 use itertools::zip_eq;
@@ -27,8 +26,9 @@ impl CircuitClaim {
         let n_components = log_sizes.len();
         channel.mix_felts(&[qm31_from_u32s(n_components as u32, 0, 0, 0)]);
 
-        // mix the enable bits into the channel.
-        channel.mix_felts(&pack_enable_bits(&[true; N_COMPONENTS]));
+        // Mix enable bits according to active component log sizes.
+        let enable_bits = log_sizes.map(|log_size| log_size > 0);
+        channel.mix_felts(&pack_enable_bits(&enable_bits));
         channel.mix_felts(&pack_component_log_sizes(log_sizes));
         // mix the output values into the channel.
         channel.mix_felts(output_values);
@@ -55,66 +55,11 @@ impl CircuitInteractionClaim {
     }
 }
 
-fn blake_iv_public_logup_sum(
-    n_blake_gates: usize,
-    common_lookup_elements: &CommonLookupElements,
-) -> QM31 {
-    // Each Blake gate uses the initial state once and creates one row in blake_output.
-    // Then blake_output is padded to a power of two, and each padding row uses the
-    // initial state once. In total we have n_blake_gates.next_power_of_two() uses.
-    let initial_state_uses = n_blake_gates.next_power_of_two();
-
-    let state_relation_id = M31::from(BLAKE_STATE_RELATION_ID);
-    let initial_state = blake2s_initial_state();
-    let initial_state_limbs = [
-        M31::from(initial_state[0] & 0xffff),
-        M31::from((initial_state[0] >> 16) & 0xffff),
-        M31::from(initial_state[1] & 0xffff),
-        M31::from((initial_state[1] >> 16) & 0xffff),
-        M31::from(initial_state[2] & 0xffff),
-        M31::from((initial_state[2] >> 16) & 0xffff),
-        M31::from(initial_state[3] & 0xffff),
-        M31::from((initial_state[3] >> 16) & 0xffff),
-        M31::from(initial_state[4] & 0xffff),
-        M31::from((initial_state[4] >> 16) & 0xffff),
-        M31::from(initial_state[5] & 0xffff),
-        M31::from((initial_state[5] >> 16) & 0xffff),
-        M31::from(initial_state[6] & 0xffff),
-        M31::from((initial_state[6] >> 16) & 0xffff),
-        M31::from(initial_state[7] & 0xffff),
-        M31::from((initial_state[7] >> 16) & 0xffff),
-    ];
-
-    let limbs = [
-        state_relation_id,
-        M31::from(0u32),
-        initial_state_limbs[0],
-        initial_state_limbs[1],
-        initial_state_limbs[2],
-        initial_state_limbs[3],
-        initial_state_limbs[4],
-        initial_state_limbs[5],
-        initial_state_limbs[6],
-        initial_state_limbs[7],
-        initial_state_limbs[8],
-        initial_state_limbs[9],
-        initial_state_limbs[10],
-        initial_state_limbs[11],
-        initial_state_limbs[12],
-        initial_state_limbs[13],
-        initial_state_limbs[14],
-        initial_state_limbs[15],
-    ];
-    let denom: QM31 = common_lookup_elements.combine(&limbs);
-    denom.inverse() * M31::from(initial_state_uses)
-}
-
 pub fn lookup_sum(
     claim: &CircuitClaim,
     interaction_claim: &CircuitInteractionClaim,
     interaction_elements: &CircuitInteractionElements,
     output_addresses: &[usize],
-    n_blake_gates: usize,
 ) -> QM31 {
     let CircuitInteractionClaim { claimed_sums } = interaction_claim;
     let component_sum: QM31 = claimed_sums.iter().sum();
@@ -129,9 +74,5 @@ pub fn lookup_sum(
         output_sum += denom.inverse();
     }
 
-    // Subtract the blake IV public logup sum (blake IV state is used but never yielded).
-    let blake_iv_sum =
-        blake_iv_public_logup_sum(n_blake_gates, &interaction_elements.common_lookup_elements);
-
-    component_sum + output_sum - blake_iv_sum
+    component_sum + output_sum
 }
