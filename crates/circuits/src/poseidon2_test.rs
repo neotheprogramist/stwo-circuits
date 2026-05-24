@@ -5,8 +5,8 @@ use crate::context::Context;
 use crate::ivalue::qm31_from_u32s;
 use crate::ops::{Guess, eq, guess};
 use crate::poseidon2::{
-    N_STATE, RATE, poseidon2_absorb_circuit, poseidon2_hash_two, poseidon2_permutation_circuit,
-    poseidon2_sponge_circuit, poseidon2_value_from_state, poseidon_gate,
+    N_STATE, RATE, poseidon_gate, poseidon2_absorb_circuit, poseidon2_hash_two,
+    poseidon2_permutation_circuit, poseidon2_sponge_circuit, poseidon2_value_from_state,
 };
 
 fn run_poseidon_gate(a: u32, b: u32) -> QM31 {
@@ -22,12 +22,20 @@ fn run_poseidon_gate(a: u32, b: u32) -> QM31 {
 fn test_poseidon_gate_hash_vectors() {
     // hash(a, b) = state[0] after Poseidon2 with initial state=[a,b,0,...,0]
     assert_eq!(run_poseidon_gate(0, 0).0.0, M31::from_u32_unchecked(1183174448), "hash(0,0)");
-    assert_eq!(run_poseidon_gate(1, 0).0.0, M31::from_u32_unchecked(846768668),  "hash(1,0)");
+    assert_eq!(run_poseidon_gate(1, 0).0.0, M31::from_u32_unchecked(846768668), "hash(1,0)");
     assert_eq!(run_poseidon_gate(0, 1).0.0, M31::from_u32_unchecked(1854499991), "hash(0,1)");
     assert_eq!(run_poseidon_gate(1, 2).0.0, M31::from_u32_unchecked(1975699496), "hash(1,2)");
-    assert_eq!(run_poseidon_gate(100, 200).0.0, M31::from_u32_unchecked(844495285), "hash(100,200)");
+    assert_eq!(
+        run_poseidon_gate(100, 200).0.0,
+        M31::from_u32_unchecked(844495285),
+        "hash(100,200)"
+    );
     // 2147483647 = p = 0 in M31, so hash(p,p) must equal hash(0,0)
-    assert_eq!(run_poseidon_gate(2147483647, 2147483647).0.0, M31::from_u32_unchecked(1183174448), "hash(p,p)");
+    assert_eq!(
+        run_poseidon_gate(2147483647, 2147483647).0.0,
+        M31::from_u32_unchecked(1183174448),
+        "hash(p,p)"
+    );
 }
 
 #[test]
@@ -62,7 +70,7 @@ fn test_poseidon2_hash_two_7_42() {
 #[test]
 fn test_absorb_circuit_matches_native() {
     let state_vals: [u32; N_STATE] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
-    let block_vals: [u32; RATE]    = [10, 20, 30, 40, 50, 60, 70, 80];
+    let block_vals: [u32; RATE] = [10, 20, 30, 40, 50, 60, 70, 80];
 
     // Native: state[0..RATE] += block, then permutation
     let mut native = state_vals;
@@ -73,12 +81,10 @@ fn test_absorb_circuit_matches_native() {
 
     // Circuit
     let mut ctx = Context::<QM31>::default();
-    let state_vars: [_; N_STATE] = std::array::from_fn(|i| {
-        qm31_from_u32s(state_vals[i], 0, 0, 0).guess(&mut ctx)
-    });
-    let block_vars: [_; RATE] = std::array::from_fn(|i| {
-        qm31_from_u32s(block_vals[i], 0, 0, 0).guess(&mut ctx)
-    });
+    let state_vars: [_; N_STATE] =
+        std::array::from_fn(|i| qm31_from_u32s(state_vals[i], 0, 0, 0).guess(&mut ctx));
+    let block_vars: [_; RATE] =
+        std::array::from_fn(|i| qm31_from_u32s(block_vals[i], 0, 0, 0).guess(&mut ctx));
     let out = poseidon2_absorb_circuit(&mut ctx, state_vars, block_vars);
 
     for i in 0..N_STATE {
@@ -95,9 +101,8 @@ fn test_permutation_circuit_matches_native() {
 
     // Circuit
     let mut ctx = Context::<QM31>::default();
-    let state_vars: [_; N_STATE] = std::array::from_fn(|i| {
-        qm31_from_u32s(input[i], 0, 0, 0).guess(&mut ctx)
-    });
+    let state_vars: [_; N_STATE] =
+        std::array::from_fn(|i| qm31_from_u32s(input[i], 0, 0, 0).guess(&mut ctx));
     let out = poseidon2_permutation_circuit(&mut ctx, state_vars);
 
     for i in 0..N_STATE {
@@ -109,11 +114,8 @@ fn test_permutation_circuit_matches_native() {
 #[test]
 fn test_sponge_circuit_matches_native() {
     // 3 blocks of RATE=8 bytes each
-    let blocks_vals: [[u32; RATE]; 3] = [
-        [1, 2, 3, 4, 5, 6, 7, 8],
-        [9, 10, 11, 12, 13, 14, 15, 16],
-        [100, 200, 0, 0, 0, 0, 0, 0],
-    ];
+    let blocks_vals: [[u32; RATE]; 3] =
+        [[1, 2, 3, 4, 5, 6, 7, 8], [9, 10, 11, 12, 13, 14, 15, 16], [100, 200, 0, 0, 0, 0, 0, 0]];
 
     // Native sponge: start from zero state, absorb each block
     let mut native = [0u32; N_STATE];
@@ -126,9 +128,10 @@ fn test_sponge_circuit_matches_native() {
 
     // Circuit sponge
     let mut ctx = Context::<QM31>::default();
-    let block_vars: Vec<[_; RATE]> = blocks_vals.iter().map(|block| {
-        std::array::from_fn(|i| qm31_from_u32s(block[i], 0, 0, 0).guess(&mut ctx))
-    }).collect();
+    let block_vars: Vec<[_; RATE]> = blocks_vals
+        .iter()
+        .map(|block| std::array::from_fn(|i| qm31_from_u32s(block[i], 0, 0, 0).guess(&mut ctx)))
+        .collect();
     let out = poseidon2_sponge_circuit(&mut ctx, &block_vars);
 
     for i in 0..N_STATE {

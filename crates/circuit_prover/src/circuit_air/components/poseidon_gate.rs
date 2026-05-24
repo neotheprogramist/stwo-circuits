@@ -1,7 +1,6 @@
 use crate::circuit_air::components::prelude::*;
 use crate::circuit_air::poseidon::poseidon_hash::{
-    N_HALF_FULL_ROUNDS, N_PARTIAL_ROUNDS, N_STATE,
-    EXTERNAL_ROUND_CONSTS, INTERNAL_ROUND_CONSTS,
+    EXTERNAL_ROUND_CONSTS, INTERNAL_ROUND_CONSTS, N_HALF_FULL_ROUNDS, N_STATE,
     apply_external_round_matrix, apply_internal_round_matrix,
 };
 use circuits_stark_verifier::constraint_eval::RelationUse;
@@ -71,9 +70,8 @@ impl FrameworkEval for Eval {
         let out_address = eval.get_preprocessed_column(PreProcessedColumnId {
             id: "poseidon_out_address".to_owned(),
         });
-        let out_mults = eval.get_preprocessed_column(PreProcessedColumnId {
-            id: "poseidon_out_mults".to_owned(),
-        });
+        let out_mults = eval
+            .get_preprocessed_column(PreProcessedColumnId { id: "poseidon_out_mults".to_owned() });
 
         // in0/in1: full QM31 inputs (all 4 limbs participate in the lookup).
         // Only limb0 feeds the Poseidon permutation; limbs 1..3 are passed through.
@@ -111,41 +109,41 @@ impl FrameworkEval for Eval {
         apply_external_round_matrix(&mut state);
 
         // First 4 full rounds
-        for round in 0..N_HALF_FULL_ROUNDS {
-            for i in 0..N_STATE {
-                state[i] = state[i].clone() + E::F::from(EXTERNAL_ROUND_CONSTS[round][i]);
+        for rc_row in &EXTERNAL_ROUND_CONSTS[..N_HALF_FULL_ROUNDS] {
+            for (s, &rc) in state.iter_mut().zip(rc_row.iter()) {
+                *s = s.clone() + E::F::from(rc);
             }
             let before_sbox = state.clone();
 
             // x^2: constrain and store witness
             state = std::array::from_fn(|i| state[i].clone() * state[i].clone());
-            for i in 0..N_STATE {
+            for s in state.iter_mut() {
                 let w = eval.next_trace_mask();
-                eval.add_constraint(state[i].clone() - w.clone());
-                state[i] = w;
+                eval.add_constraint(s.clone() - w.clone());
+                *s = w;
             }
 
             // x^4: constrain and store witness
             state = std::array::from_fn(|i| state[i].clone() * state[i].clone());
-            for i in 0..N_STATE {
+            for s in state.iter_mut() {
                 let w = eval.next_trace_mask();
-                eval.add_constraint(state[i].clone() - w.clone());
-                state[i] = w;
+                eval.add_constraint(s.clone() - w.clone());
+                *s = w;
             }
 
             // x^5 = x^4 * x_original, then external matrix
             state = std::array::from_fn(|i| state[i].clone() * before_sbox[i].clone());
             apply_external_round_matrix(&mut state);
-            for i in 0..N_STATE {
+            for s in state.iter_mut() {
                 let w = eval.next_trace_mask();
-                eval.add_constraint(state[i].clone() - w.clone());
-                state[i] = w;
+                eval.add_constraint(s.clone() - w.clone());
+                *s = w;
             }
         }
 
         // 14 partial rounds (S-box only on state[0])
-        for r in 0..N_PARTIAL_ROUNDS {
-            state[0] = state[0].clone() + E::F::from(INTERNAL_ROUND_CONSTS[r]);
+        for &rc in INTERNAL_ROUND_CONSTS.iter() {
+            state[0] = state[0].clone() + E::F::from(rc);
             let before_sbox_0 = state[0].clone();
 
             // state[0]^2
@@ -168,41 +166,40 @@ impl FrameworkEval for Eval {
 
             // Internal round matrix, store all 16 state elements
             apply_internal_round_matrix(&mut state);
-            for i in 0..N_STATE {
+            for s in state.iter_mut() {
                 let w = eval.next_trace_mask();
-                eval.add_constraint(state[i].clone() - w.clone());
-                state[i] = w;
+                eval.add_constraint(s.clone() - w.clone());
+                *s = w;
             }
         }
 
         // Last 4 full rounds
-        for round in 0..N_HALF_FULL_ROUNDS {
-            for i in 0..N_STATE {
-                state[i] = state[i].clone()
-                    + E::F::from(EXTERNAL_ROUND_CONSTS[round + N_HALF_FULL_ROUNDS][i]);
+        for rc_row in &EXTERNAL_ROUND_CONSTS[N_HALF_FULL_ROUNDS..] {
+            for (s, &rc) in state.iter_mut().zip(rc_row.iter()) {
+                *s = s.clone() + E::F::from(rc);
             }
             let before_sbox = state.clone();
 
             state = std::array::from_fn(|i| state[i].clone() * state[i].clone());
-            for i in 0..N_STATE {
+            for s in state.iter_mut() {
                 let w = eval.next_trace_mask();
-                eval.add_constraint(state[i].clone() - w.clone());
-                state[i] = w;
+                eval.add_constraint(s.clone() - w.clone());
+                *s = w;
             }
 
             state = std::array::from_fn(|i| state[i].clone() * state[i].clone());
-            for i in 0..N_STATE {
+            for s in state.iter_mut() {
                 let w = eval.next_trace_mask();
-                eval.add_constraint(state[i].clone() - w.clone());
-                state[i] = w;
+                eval.add_constraint(s.clone() - w.clone());
+                *s = w;
             }
 
             state = std::array::from_fn(|i| state[i].clone() * before_sbox[i].clone());
             apply_external_round_matrix(&mut state);
-            for i in 0..N_STATE {
+            for s in state.iter_mut() {
                 let w = eval.next_trace_mask();
-                eval.add_constraint(state[i].clone() - w.clone());
-                state[i] = w;
+                eval.add_constraint(s.clone() - w.clone());
+                *s = w;
             }
         }
 

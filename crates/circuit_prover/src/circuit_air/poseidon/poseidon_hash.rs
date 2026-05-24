@@ -217,12 +217,7 @@ where
     F: Clone + AddAssign<F> + Add<F, Output = F> + Sub<F, Output = F> + Mul<BaseField, Output = F>,
 {
     for i in 0..4 {
-        [
-            state[4 * i],
-            state[4 * i + 1],
-            state[4 * i + 2],
-            state[4 * i + 3],
-        ] = apply_m4([
+        [state[4 * i], state[4 * i + 1], state[4 * i + 2], state[4 * i + 3]] = apply_m4([
             state[4 * i].clone(),
             state[4 * i + 1].clone(),
             state[4 * i + 2].clone(),
@@ -243,10 +238,7 @@ where
     F: Clone + AddAssign<F> + Add<F, Output = F> + Sub<F, Output = F> + Mul<BaseField, Output = F>,
 {
     // Compute sum of all elements
-    let sum = state[1..]
-        .iter()
-        .cloned()
-        .fold(state[0].clone(), |acc, s| acc + s);
+    let sum = state[1..].iter().cloned().fold(state[0].clone(), |acc, s| acc + s);
 
     // Apply: state[i] = state[i] * MAT_INTERNAL_DIAG_M_1[i] + sum
     state.iter_mut().enumerate().for_each(|(i, s)| {

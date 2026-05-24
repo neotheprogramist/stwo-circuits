@@ -4,11 +4,14 @@ use circuits_stark_verifier::proof_from_stark_proof::{
     pack_component_log_sizes, pack_enable_bits, pack_public_claim,
 };
 
+use circuits::poseidon2_hasher::{
+    Poseidon2M31Channel, Poseidon2M31MerkleChannel, Poseidon2M31MerkleHasher,
+};
 use itertools::{Itertools, zip_eq};
 use num_traits::One;
 use stwo::core::ColumnVec;
 use stwo::core::air::Component;
-use stwo::core::channel::{Blake2sM31Channel, Channel};
+use stwo::core::channel::Channel;
 use stwo::core::fields::FieldExpOps;
 use stwo::core::fields::m31::BaseField;
 use stwo::core::fields::qm31::{QM31, SecureField};
@@ -16,7 +19,6 @@ use stwo::core::pcs::PcsConfig;
 use stwo::core::poly::circle::CanonicCoset;
 use stwo::core::proof::ExtendedStarkProof;
 use stwo::core::proof_of_work::GrindOps;
-use stwo::core::vcs_lifted::blake2_merkle::{Blake2sM31MerkleChannel, Blake2sM31MerkleHasher};
 use stwo::prover::backend::Col;
 use stwo::prover::backend::Column;
 use stwo::prover::backend::simd::SimdBackend;
@@ -189,7 +191,7 @@ pub fn create_proof() -> (
     Vec<Box<dyn Component>>,
     Claim<QM31>,
     PcsConfig,
-    ExtendedStarkProof<Blake2sM31MerkleHasher>,
+    ExtendedStarkProof<Poseidon2M31MerkleHasher>,
     u64,
     u32,
 ) {
@@ -204,7 +206,7 @@ pub fn create_proof_with_fold_step(
     Vec<Box<dyn Component>>,
     Claim<QM31>,
     PcsConfig,
-    ExtendedStarkProof<Blake2sM31MerkleHasher>,
+    ExtendedStarkProof<Poseidon2M31MerkleHasher>,
     u64,
     u32,
 ) {
@@ -219,7 +221,7 @@ pub fn create_proof_with_fold_step(
     );
 
     // Setup protocol.
-    let prover_channel = &mut Blake2sM31Channel::default();
+    let prover_channel = &mut Poseidon2M31Channel::default();
 
     // Mix channel salt. Note that we first reduce it modulo `M31::P`, then cast it as QM31.
     let channel_salt = 0_u32;
@@ -227,7 +229,7 @@ pub fn create_proof_with_fold_step(
     config.mix_into(prover_channel);
 
     let mut commitment_scheme =
-        CommitmentSchemeProver::<SimdBackend, Blake2sM31MerkleChannel>::new(config, &twiddles);
+        CommitmentSchemeProver::<SimdBackend, Poseidon2M31MerkleChannel>::new(config, &twiddles);
     commitment_scheme.set_store_polynomials_coefficients();
 
     // Preprocessed trace
@@ -308,7 +310,7 @@ pub fn create_proof_with_fold_step(
         claimed_sum_2,
     );
 
-    let proof = prove_ex::<SimdBackend, Blake2sM31MerkleChannel>(
+    let proof = prove_ex::<SimdBackend, Poseidon2M31MerkleChannel>(
         &[&component_1, &component_2],
         prover_channel,
         commitment_scheme,

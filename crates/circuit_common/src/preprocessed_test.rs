@@ -19,11 +19,7 @@ fn test_preprocess_circuit() {
     circuit.eq.push(Eq { in0: 0, in1: 1 });
     circuit.eq.push(Eq { in0: 0, in1: 2 });
     for i in 0..16 {
-        circuit.poseidon.push(Poseidon {
-            in0: (i * 2) % 24,
-            in1: (i * 2 + 1) % 24,
-            out: 24 + i,
-        });
+        circuit.poseidon.push(Poseidon { in0: (i * 2) % 24, in1: (i * 2 + 1) % 24, out: 24 + i });
     }
     for i in 0..16 {
         circuit.m31_to_u32.push(M31ToU32 { input: 0, out: 40 + i });

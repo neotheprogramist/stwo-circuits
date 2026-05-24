@@ -1,7 +1,7 @@
+use circuits::poseidon2_hasher::Poseidon2M31Hash;
 use num_traits::One;
 use rstest::rstest;
 use stwo::core::fields::qm31::QM31;
-use stwo::core::vcs::blake2_hash::Blake2sHash;
 
 use crate::simple_air::{create_proof, create_proof_with_fold_step};
 use crate::simple_statement::{COMPONENT_ENABLE_BITS, SimpleStatement};
@@ -54,15 +54,16 @@ fn test_verify(#[case] proof_modifier: ProofModifier) {
             let first_query = proof.aux.unsorted_query_locations[0];
             // `trace_decommitment[1]` refers to the main trace.
             let first_layer_values = &mut proof.aux.trace_decommitment[1].all_node_values[0];
-            let value: &mut Blake2sHash = first_layer_values.get_mut(&(first_query ^ 1)).unwrap();
-            value.0[0] ^= 1;
+            let value: &mut Poseidon2M31Hash =
+                first_layer_values.get_mut(&(first_query ^ 1)).unwrap();
+            value.0 += QM31::one();
         }
         ProofModifier::WrongFriAuthPath => {
             let first_query = proof.aux.unsorted_query_locations[0];
             let first_layer_values = &mut proof.aux.fri.first_layer.decommitment.all_node_values[1];
-            let value: &mut Blake2sHash =
+            let value: &mut Poseidon2M31Hash =
                 first_layer_values.get_mut(&((first_query >> 1) ^ 1)).unwrap();
-            value.0[0] ^= 1;
+            value.0 += QM31::one();
         }
         ProofModifier::WrongFriWitness => {
             let values = &mut proof.aux.fri.inner_layers.last_mut().unwrap().all_values[0];

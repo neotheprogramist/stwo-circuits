@@ -1,8 +1,12 @@
-use circuits::poseidon2::{
-    INTERNAL_DIAG, N_HALF_FULL_ROUNDS, N_PARTIAL_ROUNDS, N_STATE, RC_EXTERNAL, RC_INTERNAL,
+use circuits::poseidon2::{INTERNAL_DIAG, N_HALF_FULL_ROUNDS, N_STATE, RC_EXTERNAL, RC_INTERNAL};
+use circuits::{
+    context::{Context, Var},
+    ivalue::IValue,
+    *,
 };
-use circuits::{context::{Context, Var}, ivalue::IValue, *};
-use circuits_stark_verifier::constraint_eval::{CircuitEval, ComponentDataTrait, CompositionConstraintAccumulator, RelationUse};
+use circuits_stark_verifier::constraint_eval::{
+    CircuitEval, ComponentDataTrait, CompositionConstraintAccumulator, RelationUse,
+};
 use stwo::core::fields::m31::M31;
 use stwo::core::fields::qm31::QM31;
 use stwo_constraint_framework::preprocessed_columns::PreProcessedColumnId;
@@ -42,10 +46,7 @@ fn apply_external_round_matrix_circuit<Value: IValue>(
         state[4 * i + 3] = d;
     }
     for j in 0..4 {
-        let s = eval!(
-            context,
-            (((state[j]) + (state[j + 4])) + (state[j + 8])) + (state[j + 12])
-        );
+        let s = eval!(context, (((state[j]) + (state[j + 4])) + (state[j + 8])) + (state[j + 12]));
         for i in 0..4 {
             state[4 * i + j] = eval!(context, (state[4 * i + j]) + (s));
         }
@@ -57,13 +58,14 @@ fn apply_internal_round_matrix_circuit<Value: IValue>(
     state: &mut [Var; N_STATE],
 ) {
     let mut sum = state[0];
-    for i in 1..N_STATE {
-        sum = eval!(context, (sum) + (state[i]));
+    for &x in state.iter().skip(1) {
+        sum = eval!(context, (sum) + (x));
     }
-    for i in 0..N_STATE {
-        let diag = context.constant(QM31::from(M31::from_u32_unchecked(INTERNAL_DIAG[i])));
-        let scaled = eval!(context, (state[i]) * (diag));
-        state[i] = eval!(context, (scaled) + (sum));
+    let diags: [Var; N_STATE] =
+        INTERNAL_DIAG.map(|d| context.constant(QM31::from(M31::from_u32_unchecked(d))));
+    for (x, diag) in state.iter_mut().zip(diags) {
+        let scaled = eval!(context, (*x) * (diag));
+        *x = eval!(context, (scaled) + (sum));
     }
 }
 
@@ -110,9 +112,8 @@ impl<Value: IValue> CircuitEval<Value> for Component {
         let out_addr = acc.get_preprocessed_column(&PreProcessedColumnId {
             id: "poseidon_out_address".to_owned(),
         });
-        let out_mults = acc.get_preprocessed_column(&PreProcessedColumnId {
-            id: "poseidon_out_mults".to_owned(),
-        });
+        let out_mults = acc
+            .get_preprocessed_column(&PreProcessedColumnId { id: "poseidon_out_mults".to_owned() });
 
         let zero = context.zero();
         let mut state: [Var; N_STATE] = std::array::from_fn(|i| match i {
@@ -132,50 +133,51 @@ impl<Value: IValue> CircuitEval<Value> for Component {
         let mut col_idx = 12usize;
 
         // First 4 full rounds.
-        for round in 0..N_HALF_FULL_ROUNDS {
-            for i in 0..N_STATE {
-                let rc = context.constant(QM31::from(M31::from_u32_unchecked(RC_EXTERNAL[round][i])));
-                state[i] = eval!(context, (state[i]) + (rc));
+        for rc_row in &RC_EXTERNAL[..N_HALF_FULL_ROUNDS] {
+            let rcs: [Var; N_STATE] =
+                rc_row.map(|rc| context.constant(QM31::from(M31::from_u32_unchecked(rc))));
+            for (x, rc) in state.iter_mut().zip(rcs) {
+                *x = eval!(context, (*x) + (rc));
             }
             let before = state;
 
             // x^2 step.
-            for i in 0..N_STATE {
-                let sq = eval!(context, (state[i]) * (state[i]));
+            for x in state.iter_mut() {
+                let sq = eval!(context, (*x) * (*x));
                 let w = cols[col_idx];
                 col_idx += 1;
                 let c = eval!(context, (sq) - (w));
                 acc.add_constraint(context, c);
-                state[i] = w;
+                *x = w;
             }
 
             // x^4 step.
-            for i in 0..N_STATE {
-                let sq = eval!(context, (state[i]) * (state[i]));
+            for x in state.iter_mut() {
+                let sq = eval!(context, (*x) * (*x));
                 let w = cols[col_idx];
                 col_idx += 1;
                 let c = eval!(context, (sq) - (w));
                 acc.add_constraint(context, c);
-                state[i] = w;
+                *x = w;
             }
 
             // x^5 = x^4 * x_before, external matrix, store witnesses.
-            for i in 0..N_STATE {
-                state[i] = eval!(context, (state[i]) * (before[i]));
+            for (x, &bx) in state.iter_mut().zip(before.iter()) {
+                *x = eval!(context, (*x) * (bx));
             }
             apply_external_round_matrix_circuit(context, &mut state);
-            for i in 0..N_STATE {
+            for x in state.iter_mut() {
                 let w = cols[col_idx];
                 col_idx += 1;
-                let c = eval!(context, (state[i]) - (w));
+                let c = eval!(context, (*x) - (w));
                 acc.add_constraint(context, c);
-                state[i] = w;
+                *x = w;
             }
         }
 
         // 14 partial rounds.
-        for r in 0..N_PARTIAL_ROUNDS {
-            let rc = context.constant(QM31::from(M31::from_u32_unchecked(RC_INTERNAL[r])));
+        for &rc_val in RC_INTERNAL.iter() {
+            let rc = context.constant(QM31::from(M31::from_u32_unchecked(rc_val)));
             state[0] = eval!(context, (state[0]) + (rc));
             let s0 = state[0];
 
@@ -201,52 +203,52 @@ impl<Value: IValue> CircuitEval<Value> for Component {
             state[0] = w;
 
             apply_internal_round_matrix_circuit(context, &mut state);
-            for i in 0..N_STATE {
+            for x in state.iter_mut() {
                 let w = cols[col_idx];
                 col_idx += 1;
-                let c = eval!(context, (state[i]) - (w));
+                let c = eval!(context, (*x) - (w));
                 acc.add_constraint(context, c);
-                state[i] = w;
+                *x = w;
             }
         }
 
         // Last 4 full rounds.
-        for round in 0..N_HALF_FULL_ROUNDS {
-            for i in 0..N_STATE {
-                let rc = context
-                    .constant(QM31::from(M31::from_u32_unchecked(RC_EXTERNAL[round + N_HALF_FULL_ROUNDS][i])));
-                state[i] = eval!(context, (state[i]) + (rc));
+        for rc_row in &RC_EXTERNAL[N_HALF_FULL_ROUNDS..] {
+            let rcs: [Var; N_STATE] =
+                rc_row.map(|rc| context.constant(QM31::from(M31::from_u32_unchecked(rc))));
+            for (x, rc) in state.iter_mut().zip(rcs) {
+                *x = eval!(context, (*x) + (rc));
             }
             let before = state;
 
-            for i in 0..N_STATE {
-                let sq = eval!(context, (state[i]) * (state[i]));
+            for x in state.iter_mut() {
+                let sq = eval!(context, (*x) * (*x));
                 let w = cols[col_idx];
                 col_idx += 1;
                 let c = eval!(context, (sq) - (w));
                 acc.add_constraint(context, c);
-                state[i] = w;
+                *x = w;
             }
 
-            for i in 0..N_STATE {
-                let sq = eval!(context, (state[i]) * (state[i]));
+            for x in state.iter_mut() {
+                let sq = eval!(context, (*x) * (*x));
                 let w = cols[col_idx];
                 col_idx += 1;
                 let c = eval!(context, (sq) - (w));
                 acc.add_constraint(context, c);
-                state[i] = w;
+                *x = w;
             }
 
-            for i in 0..N_STATE {
-                state[i] = eval!(context, (state[i]) * (before[i]));
+            for (x, &bx) in state.iter_mut().zip(before.iter()) {
+                *x = eval!(context, (*x) * (bx));
             }
             apply_external_round_matrix_circuit(context, &mut state);
-            for i in 0..N_STATE {
+            for x in state.iter_mut() {
                 let w = cols[col_idx];
                 col_idx += 1;
-                let c = eval!(context, (state[i]) - (w));
+                let c = eval!(context, (*x) - (w));
                 acc.add_constraint(context, c);
-                state[i] = w;
+                *x = w;
             }
         }
 

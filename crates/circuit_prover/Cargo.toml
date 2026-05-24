@@ -14,7 +14,7 @@ serde.workspace = true
 rayon.workspace = true
 stwo_cairo_prover.workspace = true
 stwo_cairo_common = { workspace = true, features = ["prover"] }
-circuits.workspace = true
+circuits = { workspace = true, features = ["prover"] }
 circuit-verifier.workspace = true
 circuit-common = { workspace = true, features = ["prover"] }
 circuits-stark-verifier.workspace = true

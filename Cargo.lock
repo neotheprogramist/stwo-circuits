@@ -1365,6 +1365,7 @@ dependencies = [
  "itertools 0.12.1",
  "num-traits",
  "rstest",
+ "serde",
  "stwo",
 ]
 

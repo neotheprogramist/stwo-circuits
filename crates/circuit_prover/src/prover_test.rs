@@ -1,3 +1,6 @@
+use circuit_verifier::statement::CircuitStatement;
+use circuits::ops::Guess;
+
 use crate::prover::prepare_circuit_proof_for_circuit_verifier;
 use crate::prover::{BaseColumnPool, CircuitProof, SimdBackend, prove_circuit_assignment};
 use circuit_common::finalize::finalize_context;
@@ -11,17 +14,18 @@ use circuits::context::Var;
 use circuits::eval;
 use circuits::ivalue::{IValue, qm31_from_u32s};
 use circuits::ops::{output, permute};
+use circuits::poseidon2_hasher::{
+    Poseidon2M31Channel, Poseidon2M31MerkleChannel, Poseidon2M31MerkleHasher,
+};
 use circuits::{context::Context, ops::guess};
-use circuits_stark_verifier::proof::ProofConfig;
+use circuits_stark_verifier::proof::{Proof as CircuitVerifierProof, ProofConfig};
+use circuits_stark_verifier::verify::verify;
 use expect_test::expect;
 use num_traits::{One, Zero};
 use stwo::core::air::Component;
-use stwo::core::channel::Blake2sM31Channel;
 use stwo::core::channel::Channel;
 use stwo::core::fields::qm31::QM31;
 use stwo::core::pcs::{CommitmentSchemeVerifier, PcsConfig, TreeVec};
-use stwo::core::vcs_lifted::blake2_merkle::Blake2sM31MerkleChannel;
-use stwo::core::vcs_lifted::blake2_merkle::Blake2sM31MerkleHasher;
 // Not a power of 2 so that we can test component padding.
 const N: usize = 1030;
 
@@ -106,7 +110,7 @@ pub fn build_m31_to_u32_context() -> Context<QM31> {
 /// Verifies a [`CircuitProof`] using the stwo verifier. Asserts that the proof is valid
 /// and that the logup sum is zero.
 fn stwo_verify(
-    circuit_proof: CircuitProof<Blake2sM31MerkleHasher>,
+    circuit_proof: CircuitProof<Poseidon2M31MerkleHasher>,
     preprocessed_circuit: &PreprocessedCircuit,
 ) {
     let CircuitProof {
@@ -121,11 +125,11 @@ fn stwo_verify(
     assert!(stark_proof.is_ok(), "Got error: {}", stark_proof.err().unwrap());
     let proof = stark_proof.unwrap();
 
-    let verifier_channel = &mut Blake2sM31Channel::default();
+    let verifier_channel = &mut Poseidon2M31Channel::default();
     verifier_channel.mix_felts(&[channel_salt.into()]);
     pcs_config.mix_into(verifier_channel);
     let commitment_scheme =
-        &mut CommitmentSchemeVerifier::<Blake2sM31MerkleChannel>::new(pcs_config);
+        &mut CommitmentSchemeVerifier::<Poseidon2M31MerkleChannel>::new(pcs_config);
 
     // Retrieve the expected column sizes in each commitment interaction, from the AIR.
     let sizes = TreeVec::concat_cols(components.iter().map(|c| c.trace_log_degree_bounds()));
@@ -234,7 +238,7 @@ fn test_prove_and_stark_verify_m31_to_u32_context() {
 /// Verifies a [`CircuitProof`] using the circuit verifier. Requires the expected
 /// `preprocessed_root` of the preprocessed trace.
 fn circuit_verify(
-    circuit_proof: CircuitProof<Blake2sM31MerkleHasher>,
+    circuit_proof: CircuitProof<Poseidon2M31MerkleHasher>,
     preprocessed_circuit: &PreprocessedCircuit,
     preprocessed_root: [u32; 8],
 ) {
@@ -260,7 +264,7 @@ fn circuit_verify(
 }
 
 const FIBONACCI_CIRCUIT_PREPROCESSED_ROOT: [u32; 8] =
-    [579827647, 460015323, 2072233139, 709693420, 371952288, 1355707807, 1645091261, 2144587918];
+    [1228621624, 1400444575, 2071683022, 1347216230, 951524942, 274707708, 335154903, 383538658];
 
 #[test]
 fn test_prove_and_circuit_verify_fibonacci_context() {
@@ -279,7 +283,7 @@ fn test_prove_and_circuit_verify_fibonacci_context() {
 }
 
 const M31_TO_U32_CIRCUIT_PREPROCESSED_ROOT: [u32; 8] =
-    [270075619, 790063164, 183255611, 43064901, 229280056, 1717043326, 341216832, 2011011748];
+    [316480374, 1333804270, 165422386, 212229647, 1065228925, 182130970, 648747840, 1585670006];
 
 #[test]
 fn test_prove_and_circuit_verify_m31_to_u32_context() {
@@ -294,6 +298,7 @@ fn test_prove_and_circuit_verify_m31_to_u32_context() {
         &BaseColumnPool::<SimdBackend>::new(),
         PcsConfig::default(),
     );
+
     circuit_verify(circuit_proof, &preprocessed_circuit, M31_TO_U32_CIRCUIT_PREPROCESSED_ROOT);
 }
 
@@ -304,4 +309,91 @@ fn test_finalize_context() {
 
     assert!(context.circuit.add.len().is_power_of_two());
     context.validate_circuit();
+}
+
+struct ChildForRecursiveVerify {
+    output_addresses: Vec<usize>,
+    output_values: Vec<QM31>,
+    pp_trace_ids: Vec<stwo_constraint_framework::preprocessed_columns::PreProcessedColumnId>,
+    pp_trace_log_sizes: Vec<u32>,
+    root: circuits::blake::HashValue<QM31>,
+    proof: CircuitVerifierProof<QM31>,
+    proof_config: ProofConfig,
+}
+
+fn build_child_for_recursive_verify() -> ChildForRecursiveVerify {
+    let mut child_context = build_m31_to_u32_context();
+    child_context.finalize_guessed_vars();
+    child_context.validate_circuit();
+
+    let preprocessed_child = PreprocessedCircuit::preprocess_circuit(&mut child_context);
+    let child_circuit_proof = prove_circuit_assignment(
+        child_context.values(),
+        &preprocessed_child,
+        &BaseColumnPool::<SimdBackend>::new(),
+        PcsConfig::default(),
+    );
+
+    let root = child_circuit_proof.stark_proof.as_ref().unwrap().proof.commitments[0].into();
+    let output_addresses = preprocessed_child.params.output_addresses.clone();
+    let pp_trace_ids = preprocessed_child.preprocessed_trace.ids();
+    let pp_trace_log_sizes = preprocessed_child.preprocessed_trace.log_sizes();
+    let output_values = child_circuit_proof.claim.output_values.clone();
+
+    let all_components = all_circuit_components::<QM31>();
+    let enabled_bits: Vec<bool> = vec![true; all_components.len()];
+    let proof_config = ProofConfig::from_components(
+        &all_components,
+        enabled_bits,
+        pp_trace_log_sizes.clone(),
+        &child_circuit_proof.pcs_config,
+        INTERACTION_POW_BITS,
+    );
+
+    let (proof, _public_data) =
+        prepare_circuit_proof_for_circuit_verifier(child_circuit_proof, &proof_config);
+
+    ChildForRecursiveVerify {
+        output_addresses,
+        output_values,
+        pp_trace_ids,
+        pp_trace_log_sizes,
+        root,
+        proof,
+        proof_config,
+    }
+}
+
+#[test]
+#[ignore = "Reproducer for recursive in-circuit verify panic when Blake gates are generated but Blake AIR is absent"]
+#[should_panic(expected = "assertion `left == right` failed")]
+fn test_repro_recursive_in_circuit_verify_lookup_sum_panic() {
+    let child_left = build_child_for_recursive_verify();
+    let child_right = build_child_for_recursive_verify();
+
+    let mut merge_like_context = Context::<QM31>::default();
+
+    for child in [child_left, child_right] {
+        let statement = CircuitStatement::new(
+            &mut merge_like_context,
+            &child.output_addresses,
+            &child.output_values,
+            child.pp_trace_ids,
+            child.pp_trace_log_sizes,
+            child.root,
+        );
+        let proof_vars = child.proof.guess(&mut merge_like_context);
+        verify(&mut merge_like_context, &proof_vars, &child.proof_config, &statement);
+    }
+
+    merge_like_context.finalize_guessed_vars();
+    merge_like_context.validate_circuit();
+
+    let merge_preprocessed = PreprocessedCircuit::preprocess_circuit(&mut merge_like_context);
+    let _ = prove_circuit_assignment(
+        merge_like_context.values(),
+        &merge_preprocessed,
+        &BaseColumnPool::<SimdBackend>::new(),
+        PcsConfig::default(),
+    );
 }

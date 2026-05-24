@@ -1,9 +1,9 @@
-use crate::witness::components::prelude::*;
 use crate::circuit_air::components::poseidon_gate::N_TRACE_COLUMNS;
 use crate::circuit_air::poseidon::poseidon_hash::{
-    EXTERNAL_ROUND_CONSTS, INTERNAL_ROUND_CONSTS, N_HALF_FULL_ROUNDS, N_PARTIAL_ROUNDS, N_STATE,
+    EXTERNAL_ROUND_CONSTS, INTERNAL_ROUND_CONSTS, N_HALF_FULL_ROUNDS, N_STATE,
     apply_external_round_matrix, apply_internal_round_matrix,
 };
+use crate::witness::components::prelude::*;
 
 pub type InputType = [M31; 8];
 pub type PackedInputType = [PackedM31; 8];
@@ -45,40 +45,40 @@ fn compute_row(in0: [M31; 4], in1: [M31; 4]) -> [M31; N_TRACE_COLUMNS] {
     let mut col = 12;
 
     // First 4 full rounds
-    for round in 0..N_HALF_FULL_ROUNDS {
-        for i in 0..N_STATE {
-            state[i] = state[i] + EXTERNAL_ROUND_CONSTS[round][i];
+    for rc_row in &EXTERNAL_ROUND_CONSTS[..N_HALF_FULL_ROUNDS] {
+        for (s, &rc) in state.iter_mut().zip(rc_row.iter()) {
+            *s += rc;
         }
         let before = state;
 
         // x^2 witnesses
-        for i in 0..N_STATE {
-            let v = state[i] * state[i];
+        for s in state.iter_mut() {
+            let v = *s * *s;
             cols[col] = v;
             col += 1;
-            state[i] = v;
+            *s = v;
         }
         // x^4 witnesses
-        for i in 0..N_STATE {
-            let v = state[i] * state[i];
+        for s in state.iter_mut() {
+            let v = *s * *s;
             cols[col] = v;
             col += 1;
-            state[i] = v;
+            *s = v;
         }
         // x^5 = x^4 * x_before, then external matrix
-        for i in 0..N_STATE {
-            state[i] = state[i] * before[i];
+        for (s, &bx) in state.iter_mut().zip(before.iter()) {
+            *s *= bx;
         }
         apply_external_round_matrix(&mut state);
-        for i in 0..N_STATE {
-            cols[col] = state[i];
+        for s in state.iter() {
+            cols[col] = *s;
             col += 1;
         }
     }
 
     // 14 partial rounds (S-box only on state[0])
-    for r in 0..N_PARTIAL_ROUNDS {
-        state[0] = state[0] + INTERNAL_ROUND_CONSTS[r];
+    for &rc in INTERNAL_ROUND_CONSTS.iter() {
+        state[0] += rc;
         let s0 = state[0];
 
         let s2 = s0 * s0;
@@ -94,37 +94,37 @@ fn compute_row(in0: [M31; 4], in1: [M31; 4]) -> [M31; N_TRACE_COLUMNS] {
         col += 1;
 
         apply_internal_round_matrix(&mut state);
-        for i in 0..N_STATE {
-            cols[col] = state[i];
+        for s in state.iter() {
+            cols[col] = *s;
             col += 1;
         }
     }
 
     // Last 4 full rounds
-    for round in 0..N_HALF_FULL_ROUNDS {
-        for i in 0..N_STATE {
-            state[i] = state[i] + EXTERNAL_ROUND_CONSTS[round + N_HALF_FULL_ROUNDS][i];
+    for rc_row in &EXTERNAL_ROUND_CONSTS[N_HALF_FULL_ROUNDS..] {
+        for (s, &rc) in state.iter_mut().zip(rc_row.iter()) {
+            *s += rc;
         }
         let before = state;
 
-        for i in 0..N_STATE {
-            let v = state[i] * state[i];
+        for s in state.iter_mut() {
+            let v = *s * *s;
             cols[col] = v;
             col += 1;
-            state[i] = v;
+            *s = v;
         }
-        for i in 0..N_STATE {
-            let v = state[i] * state[i];
+        for s in state.iter_mut() {
+            let v = *s * *s;
             cols[col] = v;
             col += 1;
-            state[i] = v;
+            *s = v;
         }
-        for i in 0..N_STATE {
-            state[i] = state[i] * before[i];
+        for (s, &bx) in state.iter_mut().zip(before.iter()) {
+            *s *= bx;
         }
         apply_external_round_matrix(&mut state);
-        for i in 0..N_STATE {
-            cols[col] = state[i];
+        for s in state.iter() {
+            cols[col] = *s;
             col += 1;
         }
     }
@@ -224,10 +224,9 @@ fn write_trace_simd(
             });
 
             for col in 0..N_TRACE_COLUMNS {
-                *row[col] =
-                    PackedM31::from_array(std::array::from_fn::<M31, N_LANES, _>(|lane| {
-                        rows[lane][col]
-                    }));
+                *row[col] = PackedM31::from_array(std::array::from_fn::<M31, N_LANES, _>(|lane| {
+                    rows[lane][col]
+                }));
             }
 
             let in0_col1 = *row[1];
@@ -241,12 +240,9 @@ fn write_trace_simd(
             let out_col2 = *row[10];
             let out_col3 = *row[11];
 
-            *lookup_data.in_0 =
-                [gate_relation_id, in0_addr, in0_l0, in0_col1, in0_col2, in0_col3];
-            *lookup_data.in_1 =
-                [gate_relation_id, in1_addr, in1_l0, in1_col1, in1_col2, in1_col3];
-            *lookup_data.out =
-                [gate_relation_id, out_addr, out_col0, out_col1, out_col2, out_col3];
+            *lookup_data.in_0 = [gate_relation_id, in0_addr, in0_l0, in0_col1, in0_col2, in0_col3];
+            *lookup_data.in_1 = [gate_relation_id, in1_addr, in1_l0, in1_col1, in1_col2, in1_col3];
+            *lookup_data.out = [gate_relation_id, out_addr, out_col0, out_col1, out_col2, out_col3];
             *lookup_data.out_mults = mults;
         });
 
@@ -270,24 +266,24 @@ pub fn write_interaction_trace(
 
     // Pair 1: use(in0) + use(in1)
     let mut col_gen = logup_gen.new_col();
-    (col_gen.par_iter_mut(), &lookup_data.in_0, &lookup_data.in_1)
-        .into_par_iter()
-        .for_each(|(writer, values0, values1)| {
+    (col_gen.par_iter_mut(), &lookup_data.in_0, &lookup_data.in_1).into_par_iter().for_each(
+        |(writer, values0, values1)| {
             let denom0: PackedQM31 = common_lookup_elements.combine(values0);
             let denom1: PackedQM31 = common_lookup_elements.combine(values1);
             writer.write_frac(denom0 + denom1, denom0 * denom1);
-        });
+        },
+    );
     col_gen.finalize_col();
 
     // Pair 2 (single): −out_mults / combine(out)
     let mut col_gen = logup_gen.new_col();
-    (col_gen.par_iter_mut(), &lookup_data.out, &lookup_data.out_mults)
-        .into_par_iter()
-        .for_each(|(writer, out_values, &mults)| {
+    (col_gen.par_iter_mut(), &lookup_data.out, &lookup_data.out_mults).into_par_iter().for_each(
+        |(writer, out_values, &mults)| {
             let denom: PackedQM31 = common_lookup_elements.combine(out_values);
             let neg_mults = -PackedQM31::from(mults);
             writer.write_frac(neg_mults, denom);
-        });
+        },
+    );
     col_gen.finalize_col();
 
     let (trace, claimed_sum) = logup_gen.finalize_last();
