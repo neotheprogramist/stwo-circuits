@@ -365,9 +365,7 @@ fn build_child_for_recursive_verify() -> ChildForRecursiveVerify {
 }
 
 #[test]
-#[ignore = "Reproducer for recursive in-circuit verify panic when Blake gates are generated but Blake AIR is absent"]
-#[should_panic(expected = "assertion `left == right` failed")]
-fn test_repro_recursive_in_circuit_verify_lookup_sum_panic() {
+fn test_prove_recursive_in_circuit_verify() {
     let child_left = build_child_for_recursive_verify();
     let child_right = build_child_for_recursive_verify();
 

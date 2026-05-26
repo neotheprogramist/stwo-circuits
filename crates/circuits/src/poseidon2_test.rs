@@ -7,6 +7,7 @@ use crate::ops::{Guess, eq, guess};
 use crate::poseidon2::{
     N_STATE, RATE, poseidon_gate, poseidon2_absorb_circuit, poseidon2_hash_two,
     poseidon2_permutation_circuit, poseidon2_sponge_circuit, poseidon2_value_from_state,
+    poseidon2_value_qm31,
 };
 
 fn run_poseidon_gate(a: u32, b: u32) -> QM31 {
@@ -51,6 +52,21 @@ fn test_poseidon_gate_qm31_differs_from_m31() {
     let qm31_result = ctx.get(out);
 
     assert_ne!(pure_m31, qm31_result, "QM31 with non-zero limbs must differ from pure M31");
+}
+
+#[test]
+fn test_poseidon_gate_full_qm31_matches_native() {
+    let a = qm31_from_u32s(5, 99, 123, 456);
+    let b = qm31_from_u32s(42, 7, 8, 9);
+    let [s0, s1, s2, s3] = poseidon2_value_qm31(a, b);
+    let expected = qm31_from_u32s(s0.0, s1.0, s2.0, s3.0);
+
+    let mut ctx = Context::<QM31>::default();
+    let va = a.guess(&mut ctx);
+    let vb = b.guess(&mut ctx);
+    let out = poseidon_gate(&mut ctx, va, vb);
+
+    assert_eq!(ctx.get(out), expected);
 }
 
 #[test]

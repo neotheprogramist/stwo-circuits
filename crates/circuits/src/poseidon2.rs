@@ -62,114 +62,251 @@ pub const INTERNAL_DIAG: [u32; N_STATE] = [
     0x53bdc6d4, 0x5c59823e, 0x2a471c72, 0x4c975e79, 0x58dc64d4, 0x06e9315d, 0x2cf32286, 0x2fb6755d,
 ];
 
-fn add<Value: IValue>(ctx: &mut Context<Value>, a: Var, b: Var) -> Var {
-    eval!(ctx, (a) + (b))
+pub trait Poseidon2Backend {
+    type Elem: Clone;
+
+    fn zero(&mut self) -> Self::Elem;
+    fn constant(&mut self, value: u32) -> Self::Elem;
+    fn add(&mut self, a: Self::Elem, b: Self::Elem) -> Self::Elem;
+    fn mul(&mut self, a: Self::Elem, b: Self::Elem) -> Self::Elem;
+
+    fn witness(&mut self, value: Self::Elem) -> Self::Elem {
+        value
+    }
+
+    fn witness_state(&mut self, state: &mut [Self::Elem; N_STATE]) {
+        for value in state.iter_mut() {
+            *value = self.witness(value.clone());
+        }
+    }
 }
 
-fn add3<Value: IValue>(ctx: &mut Context<Value>, a: Var, b: Var, c: Var) -> Var {
-    let t = add(ctx, a, b);
-    add(ctx, t, c)
+fn add3<B: Poseidon2Backend>(
+    backend: &mut B,
+    a: B::Elem,
+    b: B::Elem,
+    c: B::Elem,
+) -> B::Elem {
+    let t = backend.add(a, b);
+    backend.add(t, c)
 }
 
-fn add4<Value: IValue>(ctx: &mut Context<Value>, a: Var, b: Var, c: Var, d: Var) -> Var {
-    let t = add3(ctx, a, b, c);
-    add(ctx, t, d)
+fn add4<B: Poseidon2Backend>(
+    backend: &mut B,
+    a: B::Elem,
+    b: B::Elem,
+    c: B::Elem,
+    d: B::Elem,
+) -> B::Elem {
+    let t = add3(backend, a, b, c);
+    backend.add(t, d)
 }
 
-fn pow5<Value: IValue>(ctx: &mut Context<Value>, x: Var) -> Var {
-    let x2 = eval!(ctx, (x) * (x));
-    let x4 = eval!(ctx, (x2) * (x2));
-    eval!(ctx, (x4) * (x))
-}
-
-fn apply_m4<Value: IValue>(
-    ctx: &mut Context<Value>,
-    x0: Var,
-    x1: Var,
-    x2: Var,
-    x3: Var,
-) -> [Var; 4] {
-    let t0 = add(ctx, x0, x1);
-    let t02 = add(ctx, t0, t0);
-    let t1 = add(ctx, x2, x3);
-    let t12 = add(ctx, t1, t1);
-    let t2 = add3(ctx, x1, x1, t1);
-    let t3 = add3(ctx, x3, x3, t0);
-    let t4 = add3(ctx, t12, t12, t3);
-    let t5 = add3(ctx, t02, t02, t2);
-    let t6 = add(ctx, t3, t5);
-    let t7 = add(ctx, t2, t4);
+pub fn apply_m4<B: Poseidon2Backend>(backend: &mut B, x: [B::Elem; 4]) -> [B::Elem; 4] {
+    let t0 = backend.add(x[0].clone(), x[1].clone());
+    let t02 = backend.add(t0.clone(), t0.clone());
+    let t1 = backend.add(x[2].clone(), x[3].clone());
+    let t12 = backend.add(t1.clone(), t1.clone());
+    let t2 = add3(backend, x[1].clone(), x[1].clone(), t1);
+    let t3 = add3(backend, x[3].clone(), x[3].clone(), t0);
+    let t4 = add3(backend, t12.clone(), t12, t3.clone());
+    let t5 = add3(backend, t02.clone(), t02, t2.clone());
+    let t6 = backend.add(t3, t5.clone());
+    let t7 = backend.add(t2, t4.clone());
     [t6, t5, t7, t4]
 }
 
-fn apply_external_round_matrix<Value: IValue>(ctx: &mut Context<Value>, state: &mut [Var; 16]) {
+pub fn apply_external_round_matrix<B: Poseidon2Backend>(
+    backend: &mut B,
+    state: &mut [B::Elem; N_STATE],
+) {
     for i in 0..4 {
         let base = 4 * i;
-        let [a, b, c, d] =
-            apply_m4(ctx, state[base], state[base + 1], state[base + 2], state[base + 3]);
+        let [a, b, c, d] = apply_m4(
+            backend,
+            [
+                state[base].clone(),
+                state[base + 1].clone(),
+                state[base + 2].clone(),
+                state[base + 3].clone(),
+            ],
+        );
         state[base] = a;
         state[base + 1] = b;
         state[base + 2] = c;
         state[base + 3] = d;
     }
     for j in 0..4 {
-        let s = add4(ctx, state[j], state[j + 4], state[j + 8], state[j + 12]);
+        let s = add4(
+            backend,
+            state[j].clone(),
+            state[j + 4].clone(),
+            state[j + 8].clone(),
+            state[j + 12].clone(),
+        );
         for i in 0..4 {
-            state[4 * i + j] = add(ctx, state[4 * i + j], s);
+            state[4 * i + j] = backend.add(state[4 * i + j].clone(), s.clone());
         }
     }
 }
 
-fn apply_internal_round_matrix<Value: IValue>(ctx: &mut Context<Value>, state: &mut [Var; 16]) {
-    let mut sum = state[0];
-    for &x in state.iter().skip(1) {
-        sum = add(ctx, sum, x);
+pub fn apply_internal_round_matrix<B: Poseidon2Backend>(
+    backend: &mut B,
+    state: &mut [B::Elem; N_STATE],
+) {
+    let mut sum = state[0].clone();
+    for x in state.iter().skip(1) {
+        sum = backend.add(sum, x.clone());
     }
-    let coeffs: [Var; N_STATE] =
-        INTERNAL_DIAG.map(|diag| ctx.constant(qm31_from_u32s(diag, 0, 0, 0)));
-    for (x, coeff) in state.iter_mut().zip(coeffs) {
-        let prod = eval!(ctx, (*x) * (coeff));
-        *x = add(ctx, prod, sum);
+    for (x, &diag) in state.iter_mut().zip(INTERNAL_DIAG.iter()) {
+        let diag = backend.constant(diag);
+        let prod = backend.mul(x.clone(), diag);
+        *x = backend.add(prod, sum.clone());
+    }
+}
+
+pub fn poseidon2_permutation<B: Poseidon2Backend>(
+    backend: &mut B,
+    mut state: [B::Elem; N_STATE],
+) -> [B::Elem; N_STATE] {
+    apply_external_round_matrix(backend, &mut state);
+
+    for rc_row in &RC_EXTERNAL[..N_HALF_FULL_ROUNDS] {
+        for (x, &rc) in state.iter_mut().zip(rc_row.iter()) {
+            let rc = backend.constant(rc);
+            *x = backend.add(x.clone(), rc);
+        }
+        let before = state.clone();
+
+        for x in state.iter_mut() {
+            *x = backend.mul(x.clone(), x.clone());
+            *x = backend.witness(x.clone());
+        }
+        for x in state.iter_mut() {
+            *x = backend.mul(x.clone(), x.clone());
+            *x = backend.witness(x.clone());
+        }
+        for (x, bx) in state.iter_mut().zip(before.iter()) {
+            *x = backend.mul(x.clone(), bx.clone());
+        }
+        apply_external_round_matrix(backend, &mut state);
+        backend.witness_state(&mut state);
+    }
+
+    for &rc in RC_INTERNAL.iter() {
+        let rc = backend.constant(rc);
+        state[0] = backend.add(state[0].clone(), rc);
+        let before = state[0].clone();
+
+        state[0] = backend.mul(state[0].clone(), state[0].clone());
+        state[0] = backend.witness(state[0].clone());
+        state[0] = backend.mul(state[0].clone(), state[0].clone());
+        state[0] = backend.witness(state[0].clone());
+        state[0] = backend.mul(state[0].clone(), before);
+        state[0] = backend.witness(state[0].clone());
+
+        apply_internal_round_matrix(backend, &mut state);
+        backend.witness_state(&mut state);
+    }
+
+    for rc_row in &RC_EXTERNAL[N_HALF_FULL_ROUNDS..] {
+        for (x, &rc) in state.iter_mut().zip(rc_row.iter()) {
+            let rc = backend.constant(rc);
+            *x = backend.add(x.clone(), rc);
+        }
+        let before = state.clone();
+
+        for x in state.iter_mut() {
+            *x = backend.mul(x.clone(), x.clone());
+            *x = backend.witness(x.clone());
+        }
+        for x in state.iter_mut() {
+            *x = backend.mul(x.clone(), x.clone());
+            *x = backend.witness(x.clone());
+        }
+        for (x, bx) in state.iter_mut().zip(before.iter()) {
+            *x = backend.mul(x.clone(), bx.clone());
+        }
+        apply_external_round_matrix(backend, &mut state);
+        backend.witness_state(&mut state);
+    }
+
+    state
+}
+
+pub fn qm31_inputs_to_state(a: QM31, b: QM31) -> [M31; N_STATE] {
+    let zero = M31::from_u32_unchecked(0);
+    let mut state = [zero; N_STATE];
+    state[0] = a.0.0;
+    state[1] = b.0.0;
+    state[2] = a.0.1;
+    state[3] = a.1.0;
+    state[4] = a.1.1;
+    state[5] = b.0.1;
+    state[6] = b.1.0;
+    state[7] = b.1.1;
+    state
+}
+
+#[derive(Default)]
+pub struct M31Backend;
+
+impl Poseidon2Backend for M31Backend {
+    type Elem = M31;
+
+    fn zero(&mut self) -> Self::Elem {
+        M31::from_u32_unchecked(0)
+    }
+
+    fn constant(&mut self, value: u32) -> Self::Elem {
+        M31::from_u32_unchecked(value)
+    }
+
+    fn add(&mut self, a: Self::Elem, b: Self::Elem) -> Self::Elem {
+        M31::reduce(a.0 as u64 + b.0 as u64)
+    }
+
+    fn mul(&mut self, a: Self::Elem, b: Self::Elem) -> Self::Elem {
+        M31::reduce((a.0 as u64) * (b.0 as u64))
+    }
+}
+
+pub struct CircuitBackend<'a, Value: IValue> {
+    ctx: &'a mut Context<Value>,
+}
+
+impl<'a, Value: IValue> CircuitBackend<'a, Value> {
+    pub fn new(ctx: &'a mut Context<Value>) -> Self {
+        Self { ctx }
+    }
+}
+
+impl<Value: IValue> Poseidon2Backend for CircuitBackend<'_, Value> {
+    type Elem = Var;
+
+    fn zero(&mut self) -> Self::Elem {
+        self.ctx.zero()
+    }
+
+    fn constant(&mut self, value: u32) -> Self::Elem {
+        self.ctx.constant(qm31_from_u32s(value, 0, 0, 0))
+    }
+
+    fn add(&mut self, a: Self::Elem, b: Self::Elem) -> Self::Elem {
+        eval!(self.ctx, (a) + (b))
+    }
+
+    fn mul(&mut self, a: Self::Elem, b: Self::Elem) -> Self::Elem {
+        eval!(self.ctx, (a) * (b))
     }
 }
 
 /// Applies the full Poseidon2 permutation to an arbitrary 16-element circuit state.
 pub fn poseidon2_permutation_circuit<Value: IValue>(
     ctx: &mut Context<Value>,
-    mut state: [Var; N_STATE],
+    state: [Var; N_STATE],
 ) -> [Var; N_STATE] {
-    apply_external_round_matrix(ctx, &mut state);
-
-    for rc_row in &RC_EXTERNAL[..N_HALF_FULL_ROUNDS] {
-        let rcs: [Var; N_STATE] = rc_row.map(|rc| ctx.constant(qm31_from_u32s(rc, 0, 0, 0)));
-        for (x, rc) in state.iter_mut().zip(rcs) {
-            *x = add(ctx, *x, rc);
-        }
-        for x in state.iter_mut() {
-            *x = pow5(ctx, *x);
-        }
-        apply_external_round_matrix(ctx, &mut state);
-    }
-
-    for &rc in RC_INTERNAL.iter() {
-        let rc_var = ctx.constant(qm31_from_u32s(rc, 0, 0, 0));
-        state[0] = add(ctx, state[0], rc_var);
-        state[0] = pow5(ctx, state[0]);
-        apply_internal_round_matrix(ctx, &mut state);
-    }
-
-    for rc_row in &RC_EXTERNAL[N_HALF_FULL_ROUNDS..] {
-        let rcs: [Var; N_STATE] = rc_row.map(|rc| ctx.constant(qm31_from_u32s(rc, 0, 0, 0)));
-        for (x, rc) in state.iter_mut().zip(rcs) {
-            *x = add(ctx, *x, rc);
-        }
-        for x in state.iter_mut() {
-            *x = pow5(ctx, *x);
-        }
-        apply_external_round_matrix(ctx, &mut state);
-    }
-
-    state
+    poseidon2_permutation(&mut CircuitBackend::new(ctx), state)
 }
 
 /// Poseidon2 hash for two field elements (state[0]=a, state[1]=b).
@@ -182,87 +319,9 @@ pub fn poseidon2_hash_two<Value: IValue>(ctx: &mut Context<Value>, a: Var, b: Va
     poseidon2_permutation_circuit(ctx, state)[0]
 }
 
-// --- Pure M31 value computation (no circuit gates) ---
-
-fn pow5_m31(x: M31) -> M31 {
-    let x2 = x * x;
-    let x4 = x2 * x2;
-    x4 * x
-}
-
-fn apply_m4_m31(state: &mut [M31; N_STATE], base: usize) {
-    let (x0, x1, x2, x3) = (state[base], state[base + 1], state[base + 2], state[base + 3]);
-    let t0 = x0 + x1;
-    let t02 = t0 + t0;
-    let t1 = x2 + x3;
-    let t12 = t1 + t1;
-    let t2 = x1 + x1 + t1;
-    let t3 = x3 + x3 + t0;
-    let t4 = t12 + t12 + t3;
-    let t5 = t02 + t02 + t2;
-    state[base] = t3 + t5;
-    state[base + 1] = t5;
-    state[base + 2] = t2 + t4;
-    state[base + 3] = t4;
-}
-
-fn apply_external_m31(state: &mut [M31; N_STATE]) {
-    for i in 0..4 {
-        apply_m4_m31(state, 4 * i);
-    }
-    for j in 0..4 {
-        let s = state[j] + state[j + 4] + state[j + 8] + state[j + 12];
-        for i in 0..4 {
-            state[4 * i + j] += s;
-        }
-    }
-}
-
-fn apply_internal_m31(state: &mut [M31; N_STATE]) {
-    let mut sum = state[0];
-    for x in state.iter().skip(1) {
-        sum += *x;
-    }
-    for (x, &diag) in state.iter_mut().zip(INTERNAL_DIAG.iter()) {
-        *x = *x * M31::from_u32_unchecked(diag) + sum;
-    }
-}
-
 /// Runs Poseidon2 permutation on an arbitrary 16-element u32 state and returns all 16 outputs.
 pub fn poseidon2_value_from_state(state: [u32; N_STATE]) -> [u32; N_STATE] {
-    let mut s: [M31; N_STATE] = state.map(M31::from_u32_unchecked);
-    poseidon2_permutation(&mut s);
-    s.map(|x| x.0)
-}
-
-fn poseidon2_permutation(state: &mut [M31; N_STATE]) {
-    apply_external_m31(state);
-
-    for rc_row in &RC_EXTERNAL[..N_HALF_FULL_ROUNDS] {
-        for (x, &rc) in state.iter_mut().zip(rc_row.iter()) {
-            *x += M31::from_u32_unchecked(rc);
-        }
-        for x in state.iter_mut() {
-            *x = pow5_m31(*x);
-        }
-        apply_external_m31(state);
-    }
-
-    for &rc in RC_INTERNAL.iter() {
-        state[0] += M31::from_u32_unchecked(rc);
-        state[0] = pow5_m31(state[0]);
-        apply_internal_m31(state);
-    }
-
-    for rc_row in &RC_EXTERNAL[N_HALF_FULL_ROUNDS..] {
-        for (x, &rc) in state.iter_mut().zip(rc_row.iter()) {
-            *x += M31::from_u32_unchecked(rc);
-        }
-        for x in state.iter_mut() {
-            *x = pow5_m31(*x);
-        }
-        apply_external_m31(state);
-    }
+    poseidon2_permutation(&mut M31Backend, state.map(M31::from_u32_unchecked)).map(|x| x.0)
 }
 
 /// Computes Poseidon2 for two QM31 inputs using all 8 M31 limbs.
@@ -270,17 +329,7 @@ fn poseidon2_permutation(state: &mut [M31; N_STATE]) {
 ///   state = [a.l0, b.l0, a.l1, a.l2, a.l3, b.l1, b.l2, b.l3, 0, ..., 0]
 /// When a.l1==a.l2==a.l3==b.l1==b.l2==b.l3==0, this equals poseidon2_value_full(a.l0, b.l0).
 pub fn poseidon2_value_qm31(a: QM31, b: QM31) -> [M31; 4] {
-    let zero = M31::from_u32_unchecked(0);
-    let mut state = [zero; N_STATE];
-    state[0] = a.0.0;
-    state[1] = b.0.0;
-    state[2] = a.0.1;
-    state[3] = a.1.0;
-    state[4] = a.1.1;
-    state[5] = b.0.1;
-    state[6] = b.1.0;
-    state[7] = b.1.1;
-    poseidon2_permutation(&mut state);
+    let state = poseidon2_permutation(&mut M31Backend, qm31_inputs_to_state(a, b));
     [state[0], state[1], state[2], state[3]]
 }
 
@@ -290,10 +339,11 @@ pub fn poseidon2_absorb_circuit<Value: IValue>(
     mut state: [Var; N_STATE],
     block: [Var; RATE],
 ) -> [Var; N_STATE] {
+    let mut backend = CircuitBackend::new(ctx);
     for i in 0..RATE {
-        state[i] = add(ctx, state[i], block[i]);
+        state[i] = backend.add(state[i], block[i]);
     }
-    poseidon2_permutation_circuit(ctx, state)
+    poseidon2_permutation(&mut backend, state)
 }
 
 /// Poseidon2 sponge over a fixed-length sequence of blocks.
