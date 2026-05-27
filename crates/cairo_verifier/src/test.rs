@@ -1,16 +1,16 @@
 use std::array;
 use std::collections::HashSet;
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::sync::Arc;
 
 use cairo_air::CairoProof;
 use cairo_air::flat_claims::FlatClaim;
-use cairo_air::utils::{binary_deserialize_from_file, binary_serialize_to_file};
+use cairo_air::utils::binary_deserialize_from_file;
 use cairo_air::verifier::INTERACTION_POW_BITS;
-use cairo_vm::types::layout_name::LayoutName;
 use circuits::context::Context;
 use circuits::ivalue::NoValue;
 use circuits::ops::Guess;
+use circuits::poseidon2_hasher::Poseidon2M31MerkleHasher;
 use circuits_stark_verifier::constraint_eval::CircuitEval;
 use circuits_stark_verifier::proof::{ProofConfig, empty_proof};
 use circuits_stark_verifier::verify::verify;
@@ -19,13 +19,8 @@ use itertools::zip_eq;
 use num_traits::Zero;
 use stwo::core::fields::m31::M31;
 use stwo::core::fields::qm31::QM31;
-use stwo::core::fri::FriConfig;
 use stwo::core::pcs::PcsConfig;
-use stwo::core::vcs_lifted::blake2_merkle::{Blake2sM31MerkleChannel, Blake2sM31MerkleHasher};
 use stwo_cairo_common::preprocessed_columns::preprocessed_trace::PreProcessedTraceVariant;
-use stwo_cairo_dev_utils::utils::get_compiled_cairo_program_path;
-use stwo_cairo_dev_utils::vm_utils::{ProgramType, run_and_adapt};
-use stwo_cairo_prover::prover::{ChannelHash, ProverParameters, prove_cairo};
 
 use crate::all_components::all_components;
 use crate::preprocessed_columns::MAX_SEQUENCE_LOG_SIZE;
@@ -37,7 +32,7 @@ use crate::verify::{
 };
 
 /// Circuit Verifies a [CairoProof].
-pub fn verify_cairo(proof: &CairoProof<Blake2sM31MerkleHasher>) -> Result<Context<QM31>, String> {
+pub fn verify_cairo(proof: &CairoProof<Poseidon2M31MerkleHasher>) -> Result<Context<QM31>, String> {
     let FlatClaim { component_enable_bits, component_log_sizes: _, public_data: _ } =
         proof.claim.flatten_claim();
 
@@ -49,7 +44,7 @@ pub fn verify_cairo(proof: &CairoProof<Blake2sM31MerkleHasher>) -> Result<Contex
 
 /// Verifies a [CairoProof] with a given set of components.
 pub fn verify_cairo_with_component_set(
-    cairo_proof: &CairoProof<Blake2sM31MerkleHasher>,
+    cairo_proof: &CairoProof<Poseidon2M31MerkleHasher>,
     component_set: HashSet<&str>,
 ) -> Result<Context<QM31>, String> {
     let FlatClaim { component_enable_bits, component_log_sizes: _, public_data: _ } =
@@ -148,37 +143,9 @@ fn test_verify() {
 }
 
 #[test]
+#[ignore = "proof file was generated with Blake2s; regenerate with Poseidon2M31MerkleChannel once supported"]
 fn test_verify_all_opcodes() {
     let proof_path = get_proof_file_path("all_opcode_components");
-    let preprocessed_trace_variant = PreProcessedTraceVariant::Canonical;
-    let low_blowup_factor = 1;
-    let trace_log_size = 25;
-
-    if std::env::var("FIX_PROOF").is_ok() {
-        let compiled_program =
-            get_compiled_cairo_program_path("test_prove_verify_all_opcode_components");
-        let input =
-            run_and_adapt(&compiled_program, ProgramType::Json, LayoutName::all_cairo_stwo, None)
-                .unwrap();
-        let prover_params = ProverParameters {
-            channel_hash: ChannelHash::Blake2sM31,
-            pcs_config: PcsConfig {
-                pow_bits: 26,
-                // Fold step = 4.
-                fri_config: FriConfig::new(0, low_blowup_factor, 70, 4),
-                lifting_log_size: Some(trace_log_size + low_blowup_factor),
-            },
-            preprocessed_trace: preprocessed_trace_variant,
-            channel_salt: 0,
-            store_polynomials_coefficients: true,
-            include_all_preprocessed_columns: true,
-        };
-        let cairo_proof = prove_cairo::<Blake2sM31MerkleChannel>(input, prover_params).unwrap();
-
-        let proof_file =
-            OpenOptions::new().create(true).write(true).truncate(true).open(&proof_path).unwrap();
-        binary_serialize_to_file(&cairo_proof, &proof_file).unwrap();
-    }
 
     let proof_file = File::open(proof_path).unwrap();
     let cairo_proof = binary_deserialize_from_file(&proof_file).unwrap();

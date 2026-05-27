@@ -12,6 +12,8 @@ use circuit_verifier::circuit_components::ComponentList;
 use circuit_verifier::statement::INTERACTION_POW_BITS;
 use circuit_verifier::verify::CircuitPublicData;
 use circuits::context::Context;
+use circuits::poseidon2_hasher::Poseidon2M31MerkleChannel;
+use circuits::poseidon2_hasher::Poseidon2M31MerkleHasher;
 use circuits_stark_verifier::proof::Proof;
 use circuits_stark_verifier::proof::{Claim, ProofConfig};
 use circuits_stark_verifier::proof_from_stark_proof::{
@@ -26,8 +28,6 @@ use stwo::core::poly::circle::CanonicCoset;
 use stwo::core::proof::ExtendedStarkProof;
 use stwo::core::proof_of_work::GrindOps;
 use stwo::core::utils::MaybeOwned;
-use stwo::core::vcs_lifted::blake2_merkle::Blake2sM31MerkleChannel;
-use stwo::core::vcs_lifted::blake2_merkle::Blake2sM31MerkleHasher;
 use stwo::core::vcs_lifted::merkle_hasher::MerkleHasherLifted;
 use stwo::prover::CommitmentSchemeProver;
 use stwo::prover::CommitmentTreeProver;
@@ -55,7 +55,7 @@ pub struct CircuitProof<H: MerkleHasherLifted> {
 #[path = "prover_test.rs"]
 pub mod test;
 
-pub fn prove_circuit(context: &mut Context<QM31>) -> CircuitProof<Blake2sM31MerkleHasher> {
+pub fn prove_circuit(context: &mut Context<QM31>) -> CircuitProof<Poseidon2M31MerkleHasher> {
     let preprocessed_circuit = PreprocessedCircuit::preprocess_circuit(context);
     prove_circuit_assignment(
         context.values(),
@@ -70,15 +70,14 @@ pub fn prove_circuit_assignment(
     preprocessed_circuit: &PreprocessedCircuit,
     base_column_pool: &BaseColumnPool<SimdBackend>,
     pcs_config: PcsConfig,
-) -> CircuitProof<Blake2sM31MerkleHasher> {
-    prove_circuit_assignment_with_channel::<Blake2sM31MerkleChannel>(
+) -> CircuitProof<Poseidon2M31MerkleHasher> {
+    prove_circuit_assignment_with_channel::<Poseidon2M31MerkleChannel>(
         values,
         preprocessed_circuit,
         base_column_pool,
         pcs_config,
     )
 }
-
 
 pub fn prove_circuit_assignment_with_channel<MC>(
     values: &[QM31],
@@ -277,7 +276,7 @@ where
 }
 
 pub fn prepare_circuit_proof_for_circuit_verifier(
-    circuit_proof: CircuitProof<Blake2sM31MerkleHasher>,
+    circuit_proof: CircuitProof<Poseidon2M31MerkleHasher>,
     proof_config: &ProofConfig,
 ) -> (Proof<QM31>, CircuitPublicData) {
     let CircuitProof {

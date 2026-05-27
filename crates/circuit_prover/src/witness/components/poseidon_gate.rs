@@ -1,12 +1,41 @@
-use crate::witness::components::prelude::*;
 use crate::circuit_air::components::poseidon_gate::N_TRACE_COLUMNS;
-use crate::circuit_air::poseidon::poseidon_hash::{
-    EXTERNAL_ROUND_CONSTS, INTERNAL_ROUND_CONSTS, N_HALF_FULL_ROUNDS, N_PARTIAL_ROUNDS, N_STATE,
-    apply_external_round_matrix, apply_internal_round_matrix,
-};
+use crate::witness::components::prelude::*;
+use circuits::poseidon2::{Poseidon2Backend, poseidon2_permutation, qm31_inputs_to_state};
+use stwo::core::fields::cm31::CM31;
 
 pub type InputType = [M31; 8];
 pub type PackedInputType = [PackedM31; 8];
+
+struct WitnessBackend<'a> {
+    cols: &'a mut [M31; N_TRACE_COLUMNS],
+    col: usize,
+}
+
+impl Poseidon2Backend for WitnessBackend<'_> {
+    type Elem = M31;
+
+    fn zero(&mut self) -> Self::Elem {
+        M31::from_u32_unchecked(0)
+    }
+
+    fn constant(&mut self, value: u32) -> Self::Elem {
+        M31::from_u32_unchecked(value)
+    }
+
+    fn add(&mut self, a: Self::Elem, b: Self::Elem) -> Self::Elem {
+        M31::reduce(a.0 as u64 + b.0 as u64)
+    }
+
+    fn mul(&mut self, a: Self::Elem, b: Self::Elem) -> Self::Elem {
+        M31::reduce((a.0 as u64) * (b.0 as u64))
+    }
+
+    fn witness(&mut self, value: Self::Elem) -> Self::Elem {
+        self.cols[self.col] = value;
+        self.col += 1;
+        value
+    }
+}
 
 /// Computes one row of the Poseidon2 witness trace.
 /// Returns all N_TRACE_COLUMNS (662) column values for a single row.
@@ -30,106 +59,18 @@ fn compute_row(in0: [M31; 4], in1: [M31; 4]) -> [M31; N_TRACE_COLUMNS] {
     cols[7] = in1[3];
     // cols[8..11] written after computation (out QM31 limbs)
 
-    let mut state = [zero; N_STATE];
-    state[0] = in0[0];
-    state[1] = in1[0];
-    state[2] = in0[1];
-    state[3] = in0[2];
-    state[4] = in0[3];
-    state[5] = in1[1];
-    state[6] = in1[2];
-    state[7] = in1[3];
-
-    apply_external_round_matrix(&mut state);
-
-    let mut col = 12;
-
-    // First 4 full rounds
-    for round in 0..N_HALF_FULL_ROUNDS {
-        for i in 0..N_STATE {
-            state[i] = state[i] + EXTERNAL_ROUND_CONSTS[round][i];
-        }
-        let before = state;
-
-        // x^2 witnesses
-        for i in 0..N_STATE {
-            let v = state[i] * state[i];
-            cols[col] = v;
-            col += 1;
-            state[i] = v;
-        }
-        // x^4 witnesses
-        for i in 0..N_STATE {
-            let v = state[i] * state[i];
-            cols[col] = v;
-            col += 1;
-            state[i] = v;
-        }
-        // x^5 = x^4 * x_before, then external matrix
-        for i in 0..N_STATE {
-            state[i] = state[i] * before[i];
-        }
-        apply_external_round_matrix(&mut state);
-        for i in 0..N_STATE {
-            cols[col] = state[i];
-            col += 1;
-        }
-    }
-
-    // 14 partial rounds (S-box only on state[0])
-    for r in 0..N_PARTIAL_ROUNDS {
-        state[0] = state[0] + INTERNAL_ROUND_CONSTS[r];
-        let s0 = state[0];
-
-        let s2 = s0 * s0;
-        cols[col] = s2;
-        col += 1;
-
-        let s4 = s2 * s2;
-        cols[col] = s4;
-        col += 1;
-
-        state[0] = s4 * s0;
-        cols[col] = state[0];
-        col += 1;
-
-        apply_internal_round_matrix(&mut state);
-        for i in 0..N_STATE {
-            cols[col] = state[i];
-            col += 1;
-        }
-    }
-
-    // Last 4 full rounds
-    for round in 0..N_HALF_FULL_ROUNDS {
-        for i in 0..N_STATE {
-            state[i] = state[i] + EXTERNAL_ROUND_CONSTS[round + N_HALF_FULL_ROUNDS][i];
-        }
-        let before = state;
-
-        for i in 0..N_STATE {
-            let v = state[i] * state[i];
-            cols[col] = v;
-            col += 1;
-            state[i] = v;
-        }
-        for i in 0..N_STATE {
-            let v = state[i] * state[i];
-            cols[col] = v;
-            col += 1;
-            state[i] = v;
-        }
-        for i in 0..N_STATE {
-            state[i] = state[i] * before[i];
-        }
-        apply_external_round_matrix(&mut state);
-        for i in 0..N_STATE {
-            cols[col] = state[i];
-            col += 1;
-        }
-    }
-
-    debug_assert_eq!(col, N_TRACE_COLUMNS, "wrong Poseidon witness column count: {col}");
+    let in0_qm31 = QM31(CM31(in0[0], in0[1]), CM31(in0[2], in0[3]));
+    let in1_qm31 = QM31(CM31(in1[0], in1[1]), CM31(in1[2], in1[3]));
+    let state = {
+        let mut backend = WitnessBackend { cols: &mut cols, col: 12 };
+        let state = poseidon2_permutation(&mut backend, qm31_inputs_to_state(in0_qm31, in1_qm31));
+        assert_eq!(
+            backend.col, N_TRACE_COLUMNS,
+            "wrong Poseidon witness column count: {}",
+            backend.col
+        );
+        state
+    };
 
     // out encodes state[0..3] as QM31 limbs
     cols[8] = state[0];
@@ -224,10 +165,9 @@ fn write_trace_simd(
             });
 
             for col in 0..N_TRACE_COLUMNS {
-                *row[col] =
-                    PackedM31::from_array(std::array::from_fn::<M31, N_LANES, _>(|lane| {
-                        rows[lane][col]
-                    }));
+                *row[col] = PackedM31::from_array(std::array::from_fn::<M31, N_LANES, _>(|lane| {
+                    rows[lane][col]
+                }));
             }
 
             let in0_col1 = *row[1];
@@ -241,12 +181,9 @@ fn write_trace_simd(
             let out_col2 = *row[10];
             let out_col3 = *row[11];
 
-            *lookup_data.in_0 =
-                [gate_relation_id, in0_addr, in0_l0, in0_col1, in0_col2, in0_col3];
-            *lookup_data.in_1 =
-                [gate_relation_id, in1_addr, in1_l0, in1_col1, in1_col2, in1_col3];
-            *lookup_data.out =
-                [gate_relation_id, out_addr, out_col0, out_col1, out_col2, out_col3];
+            *lookup_data.in_0 = [gate_relation_id, in0_addr, in0_l0, in0_col1, in0_col2, in0_col3];
+            *lookup_data.in_1 = [gate_relation_id, in1_addr, in1_l0, in1_col1, in1_col2, in1_col3];
+            *lookup_data.out = [gate_relation_id, out_addr, out_col0, out_col1, out_col2, out_col3];
             *lookup_data.out_mults = mults;
         });
 
@@ -270,26 +207,59 @@ pub fn write_interaction_trace(
 
     // Pair 1: use(in0) + use(in1)
     let mut col_gen = logup_gen.new_col();
-    (col_gen.par_iter_mut(), &lookup_data.in_0, &lookup_data.in_1)
-        .into_par_iter()
-        .for_each(|(writer, values0, values1)| {
+    (col_gen.par_iter_mut(), &lookup_data.in_0, &lookup_data.in_1).into_par_iter().for_each(
+        |(writer, values0, values1)| {
             let denom0: PackedQM31 = common_lookup_elements.combine(values0);
             let denom1: PackedQM31 = common_lookup_elements.combine(values1);
             writer.write_frac(denom0 + denom1, denom0 * denom1);
-        });
+        },
+    );
     col_gen.finalize_col();
 
     // Pair 2 (single): −out_mults / combine(out)
     let mut col_gen = logup_gen.new_col();
-    (col_gen.par_iter_mut(), &lookup_data.out, &lookup_data.out_mults)
-        .into_par_iter()
-        .for_each(|(writer, out_values, &mults)| {
+    (col_gen.par_iter_mut(), &lookup_data.out, &lookup_data.out_mults).into_par_iter().for_each(
+        |(writer, out_values, &mults)| {
             let denom: PackedQM31 = common_lookup_elements.combine(out_values);
             let neg_mults = -PackedQM31::from(mults);
             writer.write_frac(neg_mults, denom);
-        });
+        },
+    );
     col_gen.finalize_col();
 
     let (trace, claimed_sum) = logup_gen.finalize_last();
     (trace, claimed_sum)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use circuits::ivalue::qm31_from_u32s;
+    use circuits::poseidon2::poseidon2_value_qm31;
+
+    #[test]
+    fn test_compute_row_output_matches_native_poseidon() {
+        let in0 = [
+            M31::from_u32_unchecked(5),
+            M31::from_u32_unchecked(99),
+            M31::from_u32_unchecked(123),
+            M31::from_u32_unchecked(456),
+        ];
+        let in1 = [
+            M31::from_u32_unchecked(42),
+            M31::from_u32_unchecked(7),
+            M31::from_u32_unchecked(8),
+            M31::from_u32_unchecked(9),
+        ];
+        let row = compute_row(in0, in1);
+
+        let a = qm31_from_u32s(in0[0].0, in0[1].0, in0[2].0, in0[3].0);
+        let b = qm31_from_u32s(in1[0].0, in1[1].0, in1[2].0, in1[3].0);
+        let expected = poseidon2_value_qm31(a, b);
+
+        assert_eq!(row[8], expected[0]);
+        assert_eq!(row[9], expected[1]);
+        assert_eq!(row[10], expected[2]);
+        assert_eq!(row[11], expected[3]);
+    }
 }

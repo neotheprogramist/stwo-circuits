@@ -1,8 +1,12 @@
-use circuits::poseidon2::{
-    INTERNAL_DIAG, N_HALF_FULL_ROUNDS, N_PARTIAL_ROUNDS, N_STATE, RC_EXTERNAL, RC_INTERNAL,
+use circuits::poseidon2::{N_STATE, Poseidon2Backend, poseidon2_permutation};
+use circuits::{
+    context::{Context, Var},
+    ivalue::IValue,
+    *,
 };
-use circuits::{context::{Context, Var}, ivalue::IValue, *};
-use circuits_stark_verifier::constraint_eval::{CircuitEval, ComponentDataTrait, CompositionConstraintAccumulator, RelationUse};
+use circuits_stark_verifier::constraint_eval::{
+    CircuitEval, ComponentDataTrait, CompositionConstraintAccumulator, RelationUse,
+};
 use stwo::core::fields::m31::M31;
 use stwo::core::fields::qm31::QM31;
 use stwo_constraint_framework::preprocessed_columns::PreProcessedColumnId;
@@ -13,57 +17,38 @@ const RELATION_USES_PER_ROW: [RelationUse; 1] = [RelationUse { relation_id: "gat
 
 pub struct Component {}
 
-fn apply_m4_circuit<Value: IValue>(context: &mut Context<Value>, x: [Var; 4]) -> [Var; 4] {
-    let t0 = eval!(context, (x[0]) + (x[1]));
-    let t02 = eval!(context, (t0) + (t0));
-    let t1 = eval!(context, (x[2]) + (x[3]));
-    let t12 = eval!(context, (t1) + (t1));
-    let t2 = eval!(context, ((x[1]) + (x[1])) + (t1));
-    let t3 = eval!(context, ((x[3]) + (x[3])) + (t0));
-    let t4 = eval!(context, ((t12) + (t12)) + (t3));
-    let t5 = eval!(context, ((t02) + (t02)) + (t2));
-    let t6 = eval!(context, (t3) + (t5));
-    let t7 = eval!(context, (t2) + (t4));
-    [t6, t5, t7, t4]
+struct VerifierPoseidonBackend<'a, Value: IValue> {
+    context: &'a mut Context<Value>,
+    acc: &'a mut CompositionConstraintAccumulator,
+    cols: &'a [Var],
+    col_idx: usize,
 }
 
-fn apply_external_round_matrix_circuit<Value: IValue>(
-    context: &mut Context<Value>,
-    state: &mut [Var; N_STATE],
-) {
-    for i in 0..4 {
-        let [a, b, c, d] = apply_m4_circuit(
-            context,
-            [state[4 * i], state[4 * i + 1], state[4 * i + 2], state[4 * i + 3]],
-        );
-        state[4 * i] = a;
-        state[4 * i + 1] = b;
-        state[4 * i + 2] = c;
-        state[4 * i + 3] = d;
-    }
-    for j in 0..4 {
-        let s = eval!(
-            context,
-            (((state[j]) + (state[j + 4])) + (state[j + 8])) + (state[j + 12])
-        );
-        for i in 0..4 {
-            state[4 * i + j] = eval!(context, (state[4 * i + j]) + (s));
-        }
-    }
-}
+impl<Value: IValue> Poseidon2Backend for VerifierPoseidonBackend<'_, Value> {
+    type Elem = Var;
 
-fn apply_internal_round_matrix_circuit<Value: IValue>(
-    context: &mut Context<Value>,
-    state: &mut [Var; N_STATE],
-) {
-    let mut sum = state[0];
-    for i in 1..N_STATE {
-        sum = eval!(context, (sum) + (state[i]));
+    fn zero(&mut self) -> Self::Elem {
+        self.context.zero()
     }
-    for i in 0..N_STATE {
-        let diag = context.constant(QM31::from(M31::from_u32_unchecked(INTERNAL_DIAG[i])));
-        let scaled = eval!(context, (state[i]) * (diag));
-        state[i] = eval!(context, (scaled) + (sum));
+
+    fn constant(&mut self, value: u32) -> Self::Elem {
+        self.context.constant(QM31::from(M31::from_u32_unchecked(value)))
+    }
+
+    fn add(&mut self, a: Self::Elem, b: Self::Elem) -> Self::Elem {
+        eval!(self.context, (a) + (b))
+    }
+
+    fn mul(&mut self, a: Self::Elem, b: Self::Elem) -> Self::Elem {
+        eval!(self.context, (a) * (b))
+    }
+
+    fn witness(&mut self, value: Self::Elem) -> Self::Elem {
+        let witness = self.cols[self.col_idx];
+        self.col_idx += 1;
+        let constraint = eval!(self.context, (value) - (witness));
+        self.acc.add_constraint(self.context, constraint);
+        witness
     }
 }
 
@@ -110,12 +95,11 @@ impl<Value: IValue> CircuitEval<Value> for Component {
         let out_addr = acc.get_preprocessed_column(&PreProcessedColumnId {
             id: "poseidon_out_address".to_owned(),
         });
-        let out_mults = acc.get_preprocessed_column(&PreProcessedColumnId {
-            id: "poseidon_out_mults".to_owned(),
-        });
+        let out_mults = acc
+            .get_preprocessed_column(&PreProcessedColumnId { id: "poseidon_out_mults".to_owned() });
 
         let zero = context.zero();
-        let mut state: [Var; N_STATE] = std::array::from_fn(|i| match i {
+        let state: [Var; N_STATE] = std::array::from_fn(|i| match i {
             0 => in0_l0,
             1 => in1_l0,
             2 => in0_l1,
@@ -127,128 +111,17 @@ impl<Value: IValue> CircuitEval<Value> for Component {
             _ => zero,
         });
 
-        apply_external_round_matrix_circuit(context, &mut state);
-
-        let mut col_idx = 12usize;
-
-        // First 4 full rounds.
-        for round in 0..N_HALF_FULL_ROUNDS {
-            for i in 0..N_STATE {
-                let rc = context.constant(QM31::from(M31::from_u32_unchecked(RC_EXTERNAL[round][i])));
-                state[i] = eval!(context, (state[i]) + (rc));
-            }
-            let before = state;
-
-            // x^2 step.
-            for i in 0..N_STATE {
-                let sq = eval!(context, (state[i]) * (state[i]));
-                let w = cols[col_idx];
-                col_idx += 1;
-                let c = eval!(context, (sq) - (w));
-                acc.add_constraint(context, c);
-                state[i] = w;
-            }
-
-            // x^4 step.
-            for i in 0..N_STATE {
-                let sq = eval!(context, (state[i]) * (state[i]));
-                let w = cols[col_idx];
-                col_idx += 1;
-                let c = eval!(context, (sq) - (w));
-                acc.add_constraint(context, c);
-                state[i] = w;
-            }
-
-            // x^5 = x^4 * x_before, external matrix, store witnesses.
-            for i in 0..N_STATE {
-                state[i] = eval!(context, (state[i]) * (before[i]));
-            }
-            apply_external_round_matrix_circuit(context, &mut state);
-            for i in 0..N_STATE {
-                let w = cols[col_idx];
-                col_idx += 1;
-                let c = eval!(context, (state[i]) - (w));
-                acc.add_constraint(context, c);
-                state[i] = w;
-            }
-        }
-
-        // 14 partial rounds.
-        for r in 0..N_PARTIAL_ROUNDS {
-            let rc = context.constant(QM31::from(M31::from_u32_unchecked(RC_INTERNAL[r])));
-            state[0] = eval!(context, (state[0]) + (rc));
-            let s0 = state[0];
-
-            let s2 = eval!(context, (s0) * (s0));
-            let w = cols[col_idx];
-            col_idx += 1;
-            let c = eval!(context, (s2) - (w));
-            acc.add_constraint(context, c);
-            state[0] = w;
-
-            let s4 = eval!(context, (state[0]) * (state[0]));
-            let w = cols[col_idx];
-            col_idx += 1;
-            let c = eval!(context, (s4) - (w));
-            acc.add_constraint(context, c);
-            state[0] = w;
-
-            let s5 = eval!(context, (state[0]) * (s0));
-            let w = cols[col_idx];
-            col_idx += 1;
-            let c = eval!(context, (s5) - (w));
-            acc.add_constraint(context, c);
-            state[0] = w;
-
-            apply_internal_round_matrix_circuit(context, &mut state);
-            for i in 0..N_STATE {
-                let w = cols[col_idx];
-                col_idx += 1;
-                let c = eval!(context, (state[i]) - (w));
-                acc.add_constraint(context, c);
-                state[i] = w;
-            }
-        }
-
-        // Last 4 full rounds.
-        for round in 0..N_HALF_FULL_ROUNDS {
-            for i in 0..N_STATE {
-                let rc = context
-                    .constant(QM31::from(M31::from_u32_unchecked(RC_EXTERNAL[round + N_HALF_FULL_ROUNDS][i])));
-                state[i] = eval!(context, (state[i]) + (rc));
-            }
-            let before = state;
-
-            for i in 0..N_STATE {
-                let sq = eval!(context, (state[i]) * (state[i]));
-                let w = cols[col_idx];
-                col_idx += 1;
-                let c = eval!(context, (sq) - (w));
-                acc.add_constraint(context, c);
-                state[i] = w;
-            }
-
-            for i in 0..N_STATE {
-                let sq = eval!(context, (state[i]) * (state[i]));
-                let w = cols[col_idx];
-                col_idx += 1;
-                let c = eval!(context, (sq) - (w));
-                acc.add_constraint(context, c);
-                state[i] = w;
-            }
-
-            for i in 0..N_STATE {
-                state[i] = eval!(context, (state[i]) * (before[i]));
-            }
-            apply_external_round_matrix_circuit(context, &mut state);
-            for i in 0..N_STATE {
-                let w = cols[col_idx];
-                col_idx += 1;
-                let c = eval!(context, (state[i]) - (w));
-                acc.add_constraint(context, c);
-                state[i] = w;
-            }
-        }
+        let state = {
+            let mut backend =
+                VerifierPoseidonBackend { context, acc, cols, col_idx: 12usize };
+            let state = poseidon2_permutation(&mut backend, state);
+            assert_eq!(
+                backend.col_idx, N_TRACE_COLUMNS,
+                "wrong Poseidon verifier column count: {}",
+                backend.col_idx
+            );
+            state
+        };
 
         // Final output constraints.
         let c0 = eval!(context, (out_l0) - (state[0]));

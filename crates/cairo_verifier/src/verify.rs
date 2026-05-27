@@ -9,6 +9,7 @@ use circuits::blake::HashValue;
 use circuits::context::{Context, TraceContext};
 use circuits::ivalue::{IValue, NoValue};
 use circuits::ops::Guess;
+use circuits::poseidon2_hasher::Poseidon2M31MerkleHasher;
 use circuits_stark_verifier::constraint_eval::CircuitEval;
 use circuits_stark_verifier::proof::{Claim, Proof, ProofConfig, empty_proof};
 use circuits_stark_verifier::proof_from_stark_proof::{
@@ -20,7 +21,6 @@ use itertools::{Itertools, zip_eq};
 use num_traits::Zero;
 use stwo::core::fields::m31::M31;
 use stwo::core::fields::qm31::QM31;
-use stwo::core::vcs_lifted::blake2_merkle::Blake2sM31MerkleHasher;
 use stwo_cairo_common::preprocessed_columns::preprocessed_trace::PreProcessedTraceVariant;
 
 /// Logup security is defined by the `QM31` space (~124 bits) + `INTERACTION_POW_BITS` -
@@ -161,7 +161,7 @@ pub fn build_cairo_verifier_circuit(verifier_config: &CairoVerifierConfig) -> Co
 
 /// Converts a [CairoProof] to a [Proof] and [PublicData] for the circuit verifier.
 pub fn prepare_cairo_proof_for_circuit_verifier(
-    proof: &CairoProof<Blake2sM31MerkleHasher>,
+    proof: &CairoProof<Poseidon2M31MerkleHasher>,
     proof_config: &ProofConfig,
 ) -> (Proof<QM31>, PublicData) {
     let CairoProof {

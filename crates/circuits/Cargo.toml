@@ -3,12 +3,16 @@ name = "circuits"
 version.workspace = true
 edition.workspace = true
 
+[features]
+prover = ["stwo/prover"]
+
 [dependencies]
 blake2.workspace = true
 hashbrown.workspace = true
 indexmap.workspace = true
 itertools.workspace = true
 num-traits.workspace = true
+serde.workspace = true
 stwo.workspace = true
 
 [dev-dependencies]

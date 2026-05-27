@@ -1,9 +1,5 @@
 use crate::circuit_air::components::prelude::*;
-use crate::circuit_air::poseidon::poseidon_hash::{
-    N_HALF_FULL_ROUNDS, N_PARTIAL_ROUNDS, N_STATE,
-    EXTERNAL_ROUND_CONSTS, INTERNAL_ROUND_CONSTS,
-    apply_external_round_matrix, apply_internal_round_matrix,
-};
+use circuits::poseidon2::{N_STATE, Poseidon2Backend, poseidon2_permutation};
 use circuits_stark_verifier::constraint_eval::RelationUse;
 
 // 12 columns for in0/in1/out (4 M31 limbs each as QM31)
@@ -49,6 +45,38 @@ impl InteractionClaim {
 
 pub type Component = FrameworkComponent<Eval>;
 
+struct AirEvalBackend<'a, E: EvalAtRow> {
+    eval: &'a mut E,
+    witness_count: usize,
+}
+
+impl<E: EvalAtRow> Poseidon2Backend for AirEvalBackend<'_, E> {
+    type Elem = E::F;
+
+    fn zero(&mut self) -> Self::Elem {
+        E::F::from(M31::from(0u32))
+    }
+
+    fn constant(&mut self, value: u32) -> Self::Elem {
+        E::F::from(M31::from_u32_unchecked(value))
+    }
+
+    fn add(&mut self, a: Self::Elem, b: Self::Elem) -> Self::Elem {
+        a + b
+    }
+
+    fn mul(&mut self, a: Self::Elem, b: Self::Elem) -> Self::Elem {
+        a * b
+    }
+
+    fn witness(&mut self, value: Self::Elem) -> Self::Elem {
+        self.witness_count += 1;
+        let witness = self.eval.next_trace_mask();
+        self.eval.add_constraint(value - witness.clone());
+        witness
+    }
+}
+
 impl FrameworkEval for Eval {
     fn log_size(&self) -> u32 {
         self.claim.log_size
@@ -71,9 +99,8 @@ impl FrameworkEval for Eval {
         let out_address = eval.get_preprocessed_column(PreProcessedColumnId {
             id: "poseidon_out_address".to_owned(),
         });
-        let out_mults = eval.get_preprocessed_column(PreProcessedColumnId {
-            id: "poseidon_out_mults".to_owned(),
-        });
+        let out_mults = eval
+            .get_preprocessed_column(PreProcessedColumnId { id: "poseidon_out_mults".to_owned() });
 
         // in0/in1: full QM31 inputs (all 4 limbs participate in the lookup).
         // Only limb0 feeds the Poseidon permutation; limbs 1..3 are passed through.
@@ -95,7 +122,7 @@ impl FrameworkEval for Eval {
         // Initial state layout (Kakarot-compatible for pure M31 inputs):
         //   [in0.l0, in1.l0, in0.l1, in0.l2, in0.l3, in1.l1, in1.l2, in1.l3, 0, ...]
         let zero = E::F::from(M31::from(0u32));
-        let mut state: [E::F; N_STATE] = std::array::from_fn(|i| match i {
+        let state: [E::F; N_STATE] = std::array::from_fn(|i| match i {
             0 => in0_limb0.clone(),
             1 => in1_limb0.clone(),
             2 => in0_limb1.clone(),
@@ -107,104 +134,17 @@ impl FrameworkEval for Eval {
             _ => zero.clone(),
         });
 
-        // Initial external round matrix (linear, no new witness columns)
-        apply_external_round_matrix(&mut state);
-
-        // First 4 full rounds
-        for round in 0..N_HALF_FULL_ROUNDS {
-            for i in 0..N_STATE {
-                state[i] = state[i].clone() + E::F::from(EXTERNAL_ROUND_CONSTS[round][i]);
-            }
-            let before_sbox = state.clone();
-
-            // x^2: constrain and store witness
-            state = std::array::from_fn(|i| state[i].clone() * state[i].clone());
-            for i in 0..N_STATE {
-                let w = eval.next_trace_mask();
-                eval.add_constraint(state[i].clone() - w.clone());
-                state[i] = w;
-            }
-
-            // x^4: constrain and store witness
-            state = std::array::from_fn(|i| state[i].clone() * state[i].clone());
-            for i in 0..N_STATE {
-                let w = eval.next_trace_mask();
-                eval.add_constraint(state[i].clone() - w.clone());
-                state[i] = w;
-            }
-
-            // x^5 = x^4 * x_original, then external matrix
-            state = std::array::from_fn(|i| state[i].clone() * before_sbox[i].clone());
-            apply_external_round_matrix(&mut state);
-            for i in 0..N_STATE {
-                let w = eval.next_trace_mask();
-                eval.add_constraint(state[i].clone() - w.clone());
-                state[i] = w;
-            }
-        }
-
-        // 14 partial rounds (S-box only on state[0])
-        for r in 0..N_PARTIAL_ROUNDS {
-            state[0] = state[0].clone() + E::F::from(INTERNAL_ROUND_CONSTS[r]);
-            let before_sbox_0 = state[0].clone();
-
-            // state[0]^2
-            state[0] = state[0].clone() * state[0].clone();
-            let w = eval.next_trace_mask();
-            eval.add_constraint(state[0].clone() - w.clone());
-            state[0] = w;
-
-            // state[0]^4
-            state[0] = state[0].clone() * state[0].clone();
-            let w = eval.next_trace_mask();
-            eval.add_constraint(state[0].clone() - w.clone());
-            state[0] = w;
-
-            // state[0]^5
-            state[0] = state[0].clone() * before_sbox_0;
-            let w = eval.next_trace_mask();
-            eval.add_constraint(state[0].clone() - w.clone());
-            state[0] = w;
-
-            // Internal round matrix, store all 16 state elements
-            apply_internal_round_matrix(&mut state);
-            for i in 0..N_STATE {
-                let w = eval.next_trace_mask();
-                eval.add_constraint(state[i].clone() - w.clone());
-                state[i] = w;
-            }
-        }
-
-        // Last 4 full rounds
-        for round in 0..N_HALF_FULL_ROUNDS {
-            for i in 0..N_STATE {
-                state[i] = state[i].clone()
-                    + E::F::from(EXTERNAL_ROUND_CONSTS[round + N_HALF_FULL_ROUNDS][i]);
-            }
-            let before_sbox = state.clone();
-
-            state = std::array::from_fn(|i| state[i].clone() * state[i].clone());
-            for i in 0..N_STATE {
-                let w = eval.next_trace_mask();
-                eval.add_constraint(state[i].clone() - w.clone());
-                state[i] = w;
-            }
-
-            state = std::array::from_fn(|i| state[i].clone() * state[i].clone());
-            for i in 0..N_STATE {
-                let w = eval.next_trace_mask();
-                eval.add_constraint(state[i].clone() - w.clone());
-                state[i] = w;
-            }
-
-            state = std::array::from_fn(|i| state[i].clone() * before_sbox[i].clone());
-            apply_external_round_matrix(&mut state);
-            for i in 0..N_STATE {
-                let w = eval.next_trace_mask();
-                eval.add_constraint(state[i].clone() - w.clone());
-                state[i] = w;
-            }
-        }
+        let state = {
+            let mut backend = AirEvalBackend { eval: &mut eval, witness_count: 0 };
+            let state = poseidon2_permutation(&mut backend, state);
+            assert_eq!(
+                backend.witness_count,
+                N_TRACE_COLUMNS - 12,
+                "wrong AIR eval column count: {}",
+                backend.witness_count
+            );
+            state
+        };
 
         // Final constraints: out encodes state[0..3] as QM31 limbs
         eval.add_constraint(out_limb0.clone() - state[0].clone());

@@ -4,10 +4,11 @@ use stwo::core::vcs_lifted::verifier::PACKED_LEAF_SIZE;
 use crate::oods::EvalDomainSamples;
 use crate::proof::N_TRACES;
 use crate::sort_queries::{QuerySorter, generate_column_indices};
-use circuits::blake::{HashValue, blake};
+use circuits::blake::HashValue;
 use circuits::context::{Context, Var};
 use circuits::ivalue::IValue;
 use circuits::ops::{Guess, cond_flip, eq};
+use circuits::poseidon2::poseidon_gate;
 use circuits::simd::Simd;
 use circuits::wrappers::M31Wrapper;
 
@@ -53,18 +54,34 @@ impl<Value: IValue> Guess<Value> for AuthPaths<Value> {
     }
 }
 
+/// Absorbs a sequence of QM31 vars into a Poseidon2 sponge (starting from zero state)
+/// and finalizes to a HashValue.
+///
+/// Matches `Poseidon2M31MerkleHasher::update_leaf` + `finalize` for pre-packed inputs.
+fn poseidon_absorb(context: &mut Context<impl IValue>, values: &[Var]) -> HashValue<Var> {
+    let zero = context.zero();
+    let mut state = zero;
+    for &v in values {
+        state = poseidon_gate(context, state, v);
+    }
+    // finalize: h0 = state, h1 = poseidon(state, 0)
+    let h0 = state;
+    let h1 = poseidon_gate(context, state, zero);
+    HashValue(h0, h1)
+}
+
 /// Computes the hash of a Merkle leaf. The input is a vector of `M31` values.
 fn hash_leaf_m31s(
     context: &mut Context<impl IValue>,
     values: &[M31Wrapper<Var>],
 ) -> HashValue<Var> {
     let leaf_packed = Simd::pack(context, values);
-    blake(context, leaf_packed.get_packed(), values.len() * 4)
+    poseidon_absorb(context, leaf_packed.get_packed())
 }
 
 /// Computes the hash of a Merkle leaf with a single `QM31` value.
 pub fn hash_leaf_qm31(context: &mut Context<impl IValue>, value: Var) -> HashValue<Var> {
-    blake(context, &[value], 16)
+    poseidon_absorb(context, &[value])
 }
 
 /// Computes the hash of a Merkle leaf with 4 `QM31` values.
@@ -72,18 +89,25 @@ pub fn hash_packed_leaf_qm31s(
     context: &mut Context<impl IValue>,
     values: [Var; PACKED_LEAF_SIZE],
 ) -> HashValue<Var> {
-    blake(context, &values, 64)
+    poseidon_absorb(context, &values)
 }
 
 /// Computes the hash of an internal node in the Merkle tree.
+///
+/// Matches `Poseidon2M31MerkleHasher::hash_children`:
+///   s  = poseidon(left.0, left.1)
+///   s  = poseidon(s, right.0)
+///   h1 = poseidon(s, right.1)
+///   → HashValue(s, h1)
 pub fn hash_node(
     context: &mut Context<impl IValue>,
     left: HashValue<Var>,
     right: HashValue<Var>,
 ) -> HashValue<Var> {
-    let data = [left.0, left.1, right.0, right.1];
-
-    blake(context, &data, 64)
+    let s = poseidon_gate(context, left.0, left.1);
+    let s = poseidon_gate(context, s, right.0);
+    let h1 = poseidon_gate(context, s, right.1);
+    HashValue(s, h1)
 }
 
 /// Validates that the leaf at the index given by `bits` has the value `leaf` in a Merkle tree

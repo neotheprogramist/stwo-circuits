@@ -125,6 +125,9 @@ pub fn all_circuit_components<Value: IValue>() -> IndexMap<&'static str, Box<dyn
         ("qm31_ops", Box::new(CircuitQm31OpsComponent {}) as Box<dyn CircuitEval<Value>>),
         ("poseidon_gate", Box::new(CircuitPoseidonGateComponent {}) as Box<dyn CircuitEval<Value>>),
         ("m_31_to_u_32", Box::new(CircuitM31ToU32Component {}) as Box<dyn CircuitEval<Value>>),
-        ("range_check_16", Box::new(CircuitRangeCheck16Component {}) as Box<dyn CircuitEval<Value>>),
+        (
+            "range_check_16",
+            Box::new(CircuitRangeCheck16Component {}) as Box<dyn CircuitEval<Value>>,
+        ),
     ])
 }

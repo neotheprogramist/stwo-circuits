@@ -164,8 +164,8 @@ impl<Value: IValue> Statement<Value> for SimpleStatement<Value> {
 
     fn get_preprocessed_root(&self, context: &mut Context<Value>) -> HashValue<Var> {
         HashValue(
-            context.constant(qm31_from_u32s(709984722, 1794174263, 414815104, 733903951)),
-            context.constant(qm31_from_u32s(1522975159, 1233861941, 1489692661, 512084637)),
+            context.constant(qm31_from_u32s(454922211, 1076832436, 653013005, 1774755757)),
+            context.constant(qm31_from_u32s(1225142408, 790639217, 528131279, 363891668)),
         )
     }
 }

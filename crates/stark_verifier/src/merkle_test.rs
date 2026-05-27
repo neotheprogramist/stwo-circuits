@@ -8,31 +8,66 @@ use crate::merkle::{
     verify_merkle_path,
 };
 use crate::oods::EvalDomainSamples;
-use circuits::blake::{HashValue, blake_qm31};
+use circuits::blake::HashValue;
 use circuits::context::TraceContext;
 use circuits::ivalue::qm31_from_u32s;
 use circuits::ops::Guess;
+use circuits::poseidon2_hasher::poseidon2_qm31;
 use circuits::wrappers::M31Wrapper;
+
+/// Native (non-circuit) Poseidon2 node hash — must match `hash_node` in `merkle.rs`.
+fn hash_node_qm31(left: HashValue<QM31>, right: HashValue<QM31>) -> HashValue<QM31> {
+    let s = poseidon2_qm31(left.0, left.1);
+    let s = poseidon2_qm31(s, right.0);
+    let h1 = poseidon2_qm31(s, right.1);
+    HashValue(s, h1)
+}
+
+/// Native leaf hash for an empty leaf (no M31 values) — matches `hash_leaf_m31s(&[])`.
+///
+/// With no inputs, the sponge state stays at zero:
+/// `h0 = 0`, `h1 = poseidon2(0, 0)`.
+fn hash_empty_leaf() -> HashValue<QM31> {
+    let zero = QM31::default();
+    HashValue(zero, poseidon2_qm31(zero, zero))
+}
+
+/// Native leaf hash for a single M31 value — matches `hash_leaf_m31s(&[value])`.
+///
+/// Packs `value` into the first M31 component of a QM31 (others are zero),
+/// absorbs it: `state = poseidon2(0, qm31(value,0,0,0))`,
+/// then finalizes: `h0 = state`, `h1 = poseidon2(state, 0)`.
+fn hash_leaf(value: M31) -> HashValue<QM31> {
+    let zero = QM31::default();
+    let packed = qm31_from_u32s(value.0, 0, 0, 0);
+    let state = poseidon2_qm31(zero, packed);
+    HashValue(state, poseidon2_qm31(state, zero))
+}
 
 #[test]
 fn hash_leaf_m31s_regression() {
     let mut context = TraceContext::default();
 
+    // Single M31 value → packed as QM31(value, 0, 0, 0).
     let values = [M31Wrapper::from(M31::from(1641251221)).guess(&mut context)];
-
     let hash = hash_leaf_m31s(&mut context, &values);
 
-    assert_eq!(context.get(hash.0), qm31_from_u32s(1763208116, 1774406625, 1336068069, 373311810));
-    assert_eq!(context.get(hash.1), qm31_from_u32s(1118127454, 2086392865, 1278012663, 1611750530));
+    let zero = QM31::default();
+    let packed1 = qm31_from_u32s(1641251221, 0, 0, 0);
+    let state1 = poseidon2_qm31(zero, packed1);
+    assert_eq!(context.get(hash.0), state1);
+    assert_eq!(context.get(hash.1), poseidon2_qm31(state1, zero));
 
+    // Four M31 values → one packed QM31.
     let values = [1, 1641251221, 1176667027, 568581975]
         .map(|v: u32| M31Wrapper::from(M31::from(v)))
         .guess(&mut context);
-
     let hash = hash_leaf_m31s(&mut context, &values);
 
-    assert_eq!(context.get(hash.0), qm31_from_u32s(181015110, 1959144033, 1304935871, 355199825));
-    assert_eq!(context.get(hash.1), qm31_from_u32s(2146552944, 1626387857, 1235174401, 2030212627));
+    let packed4 = qm31_from_u32s(1, 1641251221, 1176667027, 568581975);
+    let state4 = poseidon2_qm31(zero, packed4);
+    assert_eq!(context.get(hash.0), state4);
+    assert_eq!(context.get(hash.1), poseidon2_qm31(state4, zero));
 
     context.validate_circuit();
 }
@@ -41,12 +76,15 @@ fn hash_leaf_m31s_regression() {
 fn hash_leaf_qm31_regression() {
     let mut context = TraceContext::default();
 
-    let value = qm31_from_u32s(106879334, 2000582330, 760086299, 1036436096).guess(&mut context);
-
+    let input = qm31_from_u32s(106879334, 2000582330, 760086299, 1036436096);
+    let value = input.guess(&mut context);
     let hash = hash_leaf_qm31(&mut context, value);
 
-    assert_eq!(context.get(hash.0), qm31_from_u32s(78597555, 2084880944, 445883625, 1079411638));
-    assert_eq!(context.get(hash.1), qm31_from_u32s(380666281, 278000547, 348716377, 469685670));
+    // poseidon_absorb(&[value]): state = poseidon2(0, input), h1 = poseidon2(state, 0).
+    let zero = QM31::default();
+    let state = poseidon2_qm31(zero, input);
+    assert_eq!(context.get(hash.0), state);
+    assert_eq!(context.get(hash.1), poseidon2_qm31(state, zero));
 
     context.validate_circuit();
 }
@@ -68,25 +106,17 @@ fn hash_node_regression() {
 
     let hash = hash_node(&mut context, left, right);
 
-    assert_eq!(context.get(hash.0), qm31_from_u32s(450130627, 1497612920, 983682843, 197153269));
-    assert_eq!(context.get(hash.1), qm31_from_u32s(627331459, 1812913354, 171180653, 1839567716));
+    // s = poseidon2(left.0, left.1); s = poseidon2(s, right.0); h1 = poseidon2(s, right.1)
+    let s = poseidon2_qm31(
+        qm31_from_u32s(1206199574, 725559475, 484842011, 871283881),
+        qm31_from_u32s(1827188342, 1597668943, 763527182, 238830106),
+    );
+    let s = poseidon2_qm31(s, qm31_from_u32s(314780017, 161087059, 1415631711, 1712686715));
+    let h1 = poseidon2_qm31(s, qm31_from_u32s(873946371, 993675704, 1750257287, 1496441219));
+    assert_eq!(context.get(hash.0), s);
+    assert_eq!(context.get(hash.1), h1);
 
     context.validate_circuit();
-}
-
-/// Similar to `hash_node`, but for `QM31` values rather than `Var`s.
-fn hash_node_qm31(left: HashValue<QM31>, right: HashValue<QM31>) -> HashValue<QM31> {
-    blake_qm31(&[left.0, left.1, right.0, right.1], 64)
-}
-
-/// Similar to `hash_leaf_m31s` for an empty leaf.
-fn hash_empty_leaf() -> HashValue<QM31> {
-    blake_qm31(&[], 0)
-}
-
-/// Similar to `hash_leaf_m31s`, but for one `M31` rather than `Var`s.
-fn hash_leaf(value: M31) -> HashValue<QM31> {
-    blake_qm31(&[value.into()], 4)
 }
 
 #[rstest]
@@ -115,12 +145,14 @@ fn test_merkle_path(#[case] wrong_bit: bool, #[case] wrong_root: bool) {
     ]
     .guess(&mut context);
 
+    // Compute root using the Poseidon2 node hash, mirroring the bit pattern.
+    // bits = [1, 1, 0, 0, 1] → for bit=1: sibling is left, for bit=0: node is left.
     let mut node = leaf_val;
-    node = hash_node_qm31(auth_path0, node);
-    node = hash_node_qm31(auth_path1, node);
-    node = hash_node_qm31(node, auth_path2);
-    node = hash_node_qm31(node, auth_path3);
-    node = hash_node_qm31(auth_path4, node);
+    node = hash_node_qm31(auth_path0, node); // bit=1 → auth_path0 is left
+    node = hash_node_qm31(auth_path1, node); // bit=1 → auth_path1 is left
+    node = hash_node_qm31(node, auth_path2); // bit=0 → node is left
+    node = hash_node_qm31(node, auth_path3); // bit=0 → node is left
+    node = hash_node_qm31(auth_path4, node); // bit=1 → auth_path4 is left
     if wrong_root {
         node.0 += qm31_from_u32s(0, 0, 1, 0);
     }

@@ -157,13 +157,8 @@ where
 
     // All 5 interaction traces are independent — write and interpolate in parallel.
     let mut all_polys: [Vec<_>; 5] = std::array::from_fn(|_| Vec::new());
-    let [
-        eq_polys,
-        qm31_ops_polys,
-        poseidon_gate_polys,
-        m_31_to_u_32_polys,
-        range_check_16_polys,
-    ] = &mut all_polys;
+    let [eq_polys, qm31_ops_polys, poseidon_gate_polys, m_31_to_u_32_polys, range_check_16_polys] =
+        &mut all_polys;
     let mut claimed_sums = [QM31::zero(); 5];
     let [
         eq_claimed_sum,
@@ -175,7 +170,8 @@ where
     {
         let eq_lookup_data = circuit_interaction_claim_generator.eq_lookup_data;
         let qm31_ops_lookup_data = circuit_interaction_claim_generator.qm31_ops_lookup_data;
-        let poseidon_gate_lookup_data = circuit_interaction_claim_generator.poseidon_gate_lookup_data;
+        let poseidon_gate_lookup_data =
+            circuit_interaction_claim_generator.poseidon_gate_lookup_data;
         let m_31_to_u_32 = circuit_interaction_claim_generator.m_31_to_u_32;
         let range_check_16 = circuit_interaction_claim_generator.range_check_16;
         scope(|s| {
